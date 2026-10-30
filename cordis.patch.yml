@@ -1,3 +1,7 @@
 - insert:
-    - id: pkg-placeholder
-      name: pkg-placeholder
+    - id: dsh-third-kernel
+      name: dsh-third-kernel
+    # Shared Tailwind stylesheet: this plugin ships CSS-first source, and
+    # dsh-taiwind compiles every plugin's classes into one deduplicated sheet.
+    - id: dsh-taiwind
+      name: dsh-taiwind

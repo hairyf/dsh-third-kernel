@@ -1,0 +1,60 @@
+/*
+ * dsh-taiwind entry.
+ *
+ * This file stays uncompiled in the package: the shared Tailwind compiler picks
+ * up every complete class name from the built client bundle and emits one
+ * stylesheet for all plugins. Only theme tokens and a few genuinely reusable
+ * utilities live here, all prefixed `tk-` so nothing leaks into the official UI.
+ */
+@import "tailwindcss";
+
+@theme {
+  --color-tk-codex: #0a0a0a;
+  --color-tk-codex-muted: #6b6b6b;
+  --color-tk-codex-line: #e6e4e0;
+  --color-tk-codex-paper: #ffffff;
+  --color-tk-codex-rail: #f7f6f4;
+
+  --color-tk-claude: #c8553d;
+  --color-tk-claude-muted: #6f6259;
+  --color-tk-claude-line: #e8e0d6;
+  --color-tk-claude-paper: #faf8f5;
+  --color-tk-claude-rail: #f3ede5;
+
+  --font-tk-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-tk-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Scrollbars inside a kernel surface, which is not covered by the official theme. */
+@utility tk-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
+}
+
+@utility tk-fade-in {
+  animation: tk-fade-in 160ms ease-out;
+}
+
+@keyframes tk-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@layer base {
+  /*
+   * A kernel surface paints its own light palette, but the official theme sets an
+   * explicit `color` on form controls (white, for its dark theme) which would make
+   * every kernel button invisible. This reset lives in @layer base so Tailwind
+   * utilities — and any explicit text color a component sets — still win.
+   */
+  [data-dsh-third-kernel] :where(button, input, textarea, select) {
+    color: inherit;
+    font: inherit;
+  }
+}

@@ -2,59 +2,57 @@
 
 ## 1. 项目架构与目录契约
 
-* **架构**：Host half (`src/*.ts`) / Client half (`src/client/*.ts`)。
+* **架构**：Host half (`src/host/*`、`src/index.ts`) / Client half (`src/client/*`)，共享协议在 `src/shared/protocol.ts`。
 * **宿主侧**：
-* `src/index.ts`（能力、工具、HTTP 路由、系统上下文）
-* `src/types.ts`、`src/constants.ts`
-
-
+  * `src/index.ts`：cordis `apply`，注册 `/api` 路由与生命週期清理。
+  * `src/host/detect.ts`：从 PATH 解析并探测 CLI，返回 `KernelCommand`。
+  * `src/host/installer.ts`：流式全局安装，进度按 npm 阶段推进。
+  * `src/host/codex.ts` / `src/host/claude.ts`：各自 JSONL 协议适配器，实现 `KernelSession`。
+  * `src/host/transport.ts`：JSONL 子进程与请求关联。
+  * `src/host/routes.ts`：已鉴权 `/api` 通道上的精确路由，**所有入参在此校验**。
 * **客户端侧**：
-* `src/client/types.ts`：**唯一**集中存放客户端共享类型的位置（禁止组件重复定义）。
-* `src/client/constants.ts`：**唯一**集中存放常量（Slot、ID、API 前缀、样式 ID 等）的位置。
-* `src/client/icons.ts`、`src/client/styles.ts`（样式标签挂载）。
+  * `src/client/constants.ts`：**唯一**集中存放 UI 常量与文案的位置。
+  * `src/client/components/kernel-icons.tsx`：内核图标（Codex/Claude 使用上游真实路径，DSH 用官方 `FishLogo`）。
+  * `src/client/components/brand.tsx`：官方品牌行 + hover 菜单。
+  * `src/client/components/kernel-overlay.tsx`：接管层（`shell.overlay`）。
+  * `src/client/components/codex-page.tsx` / `claude-page.tsx`：两套独立内核页面。
+  * `src/client/lib/runner.ts`：**唯一**的流式回合状态机。
 
 ## 2. 编码与技术规范
 
-* **基础**：TypeScript (`strict`)、ESM (`"type": "module"`)、pnpm（通过 `pnpm-workspace.yaml` catalog 管理依赖）。
-* **风格**：遵循 `@antfu/eslint-config`（**无 Prettier**）；使用相对路径导入；类型/常量必须显式导入。
-* **组件**：React 组件统一使用 kebab-case（如 `extension-panel.tsx`）；优先复用 DeepSeek Harness 已有组件。
-* **类型与常量**：跨文件类型/常量必须走集中文件；组件仅消费常量，不硬编码协议字符串。
+* **基础**：TypeScript (`strict`, `noUnusedLocals`)、ESM (`"type": "module"`)、pnpm catalog 管理依赖。
+* **风格**：`@antfu/eslint-config`（无 Prettier）；相对路径导入；类型/常量显式导入。
+* **组件**：kebab-case 文件；**优先复用官方 `@deepseek-ai/dsh-client-ui-primitives`**，禁止重画官方已有图形。
 
 ## 3. 样式与生命周期规则
 
-* **样式**：无 CSS-in-JS 运行时。通过单一 `<style data-plugin="..." data-plugin-css="...">` 标签挂载；样式由 `mount*Styles` 返回 disposer 并交由 `ctx.effect()` 管理。选择器限定在根 class 内，使用插件前缀。
-* **生命周期 (`apply()`)**：
-1. 注册/安装 locale、服务与协议。
-2. `ctx.effect()` 挂载样式（返回 disposer）。
-3. 注册 Slot 组件与 UI 行为。
-4. `ctx.effect()` 管理 Observer、事件、定时器、DOM 补丁。
-
-* **清理原则**：所有 effect 必须具备完备的 disposer（移除监听、取消异步、清理 DOM 标签与状态）。
+* **样式**：经 [dsh-taiwind](https://github.com/hairyf/dsh-taiwind) 共享编译。`src/main.css` 是未编译的 CSS-first 入口，在 `package.json` 以 `dsh.taiwind` 声明。
+  * 自定义 token/工具类一律 `tk-` 前缀，避免污染官方主题。
+  * 需要覆盖官方 CSS module 的**非分层**声明时用 `!` 前缀工具类（如 `min-w-[248px]!`）。
+  * 官方主题会给 `button`/`input` 设显式颜色，因此内核页面必须在 `[data-dsh-third-kernel]` 作用域内重置控件继承色。
+* **生命周期**：所有监听/定时器/子进程都必须有 disposer，由 `ctx.effect()` 托管；卸载插件不得留下孤儿进程。
 
 ## 4. Slot 与宿主安全规则
 
-* **Slot**：使用 `constants.ts` 中的稳定常量（`name`、`id`、`registrant`、`order`、`priority`）；失败时必须 graceful fallback（禁止白屏）。
-* **宿主侧**：
-* Git/文件/进程 API 仅限 Host half。
-* HTTP 路由严格限制方法并校验来源/权限。
-* 破坏性 Git 操作必须原子化并校验每步结果，严禁静默覆盖用户分支、未提交改动或将 `process.cwd()` 作为未知 session 的 fallback。
+* **切换入口**：`sidebar.brand.mark` / `sidebar.brand.name` 是 `single` 槽，官方占用在 priority 0；本插件以 **priority -1** 遮蔽（同优先级重复注册会抛错）。
+* **接管层**：注册进 `shell.overlay`（`list`、additive、全视口），**禁止**注册 `root`——会永久遮蔽官方 AppFrame 且销毁官方会话状态。
+* **宿主侧**：CLI 只从 PATH 解析；Windows `.cmd` 包装器必须指向厂商官方入口才解析执行，否则拒绝（否则即命令注入）。
+* **API**：仅注册在 `connection.fetch`（已带 Host/Origin 与鉴权栅栏），并自行校验方法、路径与 body。
 
 ## 5. 退级策略（优先级从高到低）
 
-1. **官方公开 API**：严格对照当前安装版本的 `.d.ts`（禁止臆断）。
-2. **DOM 补丁**：通过 MutationObserver 监听官方 DOM（仅限稳定 `aria-label` / `role` 选择器，禁用 CSS module 哈希）。
+1. **官方公开 API**：严格对照已安装版本 `.d.ts`（禁止臆断）。
+2. **官方组件**：优先复用 primitives 与 slot 契约。
 3. **降级/禁用**：无解时明确报错并禁用功能，严禁静默半工作状态。
 
 ## 6. 验证与交付检查
 
-提交/完成前必须通过以下命令：
-
 ```bash
 pnpm run lint --fix
 pnpm run typecheck
-pnpm run test -- --run
+pnpm run test
 pnpm run build
-
 ```
 
-* **检查清单**：共享类型/常量已归位 ｜ 样式单标签且带 disposer 完整清理 ｜ Slot 稳定且具兜底 ｜ 无数据/分支覆盖风险 ｜ 相关契约文档已同步。
+* `test/codex-*.test.ts` 会在本机装有 Codex CLI 时**真实启动子进程**并校验流式回合；未安装时断言跳过，不会假绿。
+* **检查清单**：共享类型/常量已归位 ｜ effect 均有 disposer ｜ Slot 不抢占 `root` ｜ 无未验证即宣称可用的功能 ｜ README 的验证状态与实际一致。

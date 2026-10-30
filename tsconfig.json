@@ -1,16 +1,21 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
-    "lib": ["ESNext"],
+    "target": "ES2022",
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "strict": true,
-    "strictNullChecks": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noEmit": true,
     "esModuleInterop": true,
+    "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "skipDefaultLibCheck": true,
     "skipLibCheck": true
-  }
+  },
+  "include": ["src", "test", "*.config.ts"]
 }
