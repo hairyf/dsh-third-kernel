@@ -10,3 +10,6 @@ logs
 node_modules
 **/skills/npm-*
 temp
+
+# Local scratch (probe scripts, vendoring reports)
+.temp/

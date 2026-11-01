@@ -6,9 +6,9 @@
  * carry deltas and item lifecycles; approvals and user input arrive as
  * server-to-client requests. Verified against codex-cli 0.162.1.
  */
-import type { TurnEvent } from '../shared/protocol'
+import type { KernelModel, PermissionMode, TurnEvent } from '../shared/protocol'
 import type { KernelCommand } from './detect'
-import type { ApprovalAnswer, KernelSession, Waiter } from './session-types'
+import type { ApprovalAnswer, KernelSession, TurnInput, Waiter } from './session-types'
 import type { PendingRequests } from './transport'
 import { nativeEnvironment } from './detect'
 import { approvalDetails, questionsOf } from './session-types'
@@ -16,7 +16,33 @@ import { BridgeError, errorFrom, INTERRUPT_TIMEOUT_MS, JsonLinesProcess, optiona
 
 const INITIALIZATION = {
   clientInfo: { name: 'dsh-third-kernel', title: 'DSH third-party kernel', version: '0.1.0' },
-  capabilities: { experimentalApi: true },
+  capabilities: {
+    experimentalApi: true,
+    requestAttestation: false,
+    // High-rate notifications this adapter never reads; suppressing them at
+    // initialize keeps the child from paying for traffic we would drop anyway.
+    optOutNotificationMethods: [
+      'rawResponseItem/completed',
+      'rawResponse/completed',
+      'fs/changed',
+      'thread/realtime/started',
+      'thread/realtime/itemAdded',
+      'thread/realtime/item/started',
+      'thread/realtime/item/transcript/delta',
+      'thread/realtime/item/completed',
+      'thread/realtime/transcript/delta',
+      'thread/realtime/transcript/done',
+      'thread/realtime/outputAudio/delta',
+      'thread/realtime/sdp',
+      'thread/realtime/error',
+      'thread/realtime/closed',
+      'fuzzyFileSearch/sessionUpdated',
+      'fuzzyFileSearch/sessionCompleted',
+      'externalAgentConfig/import/progress',
+      'externalAgentConfig/import/completed',
+      'app/list/updated',
+    ],
+  },
 }
 
 const EFFORT_NAMES = new Map([
@@ -26,8 +52,42 @@ const EFFORT_NAMES = new Map([
   ['medium', 'Medium'],
   ['high', 'High'],
   ['xhigh', 'Extra High'],
+  ['ultra', 'Ultra'],
   ['max', 'Max'],
 ])
+
+/**
+ * Permission mode → the two Codex knobs that express it.
+ *
+ * `approvalPolicy` decides whether the app-server turns a command into a
+ * `requestApproval` round-trip; `sandboxPolicy` decides what the sandboxed child
+ * may touch. They move together: `never` with a read-only sandbox is just an
+ * auto-denier, and `on-request` with full access asks about nothing that matters.
+ *
+ * Only `turn/start` and `thread/settings/update` take this object form;
+ * `thread/start` takes the string `sandbox` instead. A `workspaceWrite` policy
+ * with no `writableRoots` leaves the sandbox with nothing to write to, so the
+ * cwd is always spelled out.
+ */
+export function approvalPolicy(mode: PermissionMode, cwd: string): Record<string, unknown> {
+  switch (mode) {
+    case 'read-only':
+      return { approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
+    case 'full-access':
+      return { approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } }
+    default:
+      return {
+        approvalPolicy: 'on-request',
+        sandboxPolicy: {
+          type: 'workspaceWrite',
+          writableRoots: [cwd],
+          networkAccess: false,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false,
+        },
+      }
+  }
+}
 
 interface TurnState {
   yieldEvent: (event: TurnEvent) => void
@@ -36,7 +96,10 @@ interface TurnState {
   assistants: Set<string>
   text: Map<string, string>
   thinking: Map<string, string>
-  track: Map<string, string>
+  /** Reasoning items that already streamed a summary, so raw text never doubles it. */
+  summarized: Set<string>
+  /** Last non-retrying error text, used when the turn itself ends failed. */
+  lastError?: string
   interrupted: boolean
 }
 
@@ -85,28 +148,42 @@ export class CodexSession implements KernelSession {
     this.nativeId = stringField(record(thread.thread), 'id')
   }
 
-  async models(signal?: AbortSignal): Promise<string[]> {
-    const response = record(await this.request('model/list', { limit: 100, includeHidden: false }, signal))
-    if (!Array.isArray(response.data))
-      return []
-    return response.data.flatMap((value) => {
-      const model = value as Record<string, unknown>
+  async models(signal?: AbortSignal): Promise<KernelModel[]> {
+    const rows: Record<string, unknown>[] = []
+    let cursor: string | undefined
+    do {
+      const response = record(await this.request('model/list', {
+        includeHidden: false,
+        limit: 100,
+        ...cursor === undefined ? {} : { cursor },
+      }, signal))
+      if (Array.isArray(response.data)) {
+        for (const value of response.data) {
+          if (typeof value === 'object' && value !== null && !Array.isArray(value))
+            rows.push(value as Record<string, unknown>)
+        }
+      }
+      cursor = optionalString(response.nextCursor)
+    } while (cursor !== undefined)
+    return rows.flatMap((model): KernelModel[] => {
+      if (model.hidden === true)
+        return []
       const id = optionalString(model.model) ?? optionalString(model.id)
       if (id === undefined)
         return []
       const efforts = Array.isArray(model.supportedReasoningEfforts)
         ? model.supportedReasoningEfforts.flatMap((entry) => {
-            const label = (entry as Record<string, unknown>).reasoningEffort
-            if (typeof label !== 'string' || label === '')
+            const raw = (entry as Record<string, unknown>).reasoningEffort
+            if (typeof raw !== 'string' || raw === '')
               return []
-            return [EFFORT_NAMES.get(label) ?? label]
+            return [{ id: raw, label: EFFORT_NAMES.get(raw) ?? raw }]
           })
         : []
-      return [efforts.length === 0 ? id : `${id} · ${efforts.join('/')}`]
+      return [{ id, label: optionalString(model.displayName) ?? id, efforts }]
     })
   }
 
-  async* run(input: { text: string }, signal: AbortSignal): AsyncGenerator<TurnEvent> {
+  async* run(input: TurnInput, signal: AbortSignal): AsyncGenerator<TurnEvent> {
     if (this.disposed || this.failure)
       throw this.failure ?? new BridgeError('BRIDGE_PROCESS_CLOSED', 'Codex 会话已关闭')
     if (this.active !== undefined)
@@ -131,7 +208,7 @@ export class CodexSession implements KernelSession {
       assistants: new Set(),
       text: new Map(),
       thinking: new Map(),
-      track: new Map(),
+      summarized: new Set(),
       interrupted: false,
     }
     this.active = state
@@ -144,9 +221,17 @@ export class CodexSession implements KernelSession {
     }
     signal.addEventListener('abort', aborted, { once: true })
     try {
+      const options = input.options
       const response = record(await this.request('turn/start', {
         threadId: this.nativeId,
         input: [{ type: 'text', text: input.text, text_elements: [] }],
+        ...options === undefined
+          ? {}
+          : {
+              ...approvalPolicy(options.permission, this.resolveCwd()),
+              ...options.model === undefined ? {} : { model: options.model },
+              ...options.effort === undefined ? {} : { effort: options.effort },
+            },
       }, signal))
       this.activeTurnId = stringField(record(response.turn), 'id')
       if (signal.aborted)
@@ -357,18 +442,40 @@ export class CodexSession implements KernelSession {
           }
         }
         const status = optionalString(completed.status) ?? 'completed'
-        if (status === 'interrupted' && !turn.interrupted)
+        // A turn that ends without a completion for every open tool would leave
+        // cards spinning forever, so unfinished tools are closed here.
+        for (const [id, tool] of turn.tools) {
+          if (tool.ended)
+            continue
+          tool.ended = true
+          turn.yieldEvent({ type: 'tool-end', id, output: status === 'completed' ? 'tool-unfinished' : status, error: true })
+        }
+        if (status === 'completed' && !turn.interrupted) {
+          turn.finish()
+        }
+        else if (status === 'interrupted' && !turn.interrupted) {
           turn.finish(new BridgeError('BRIDGE_NATIVE_INTERRUPTED', 'Codex 中断了该回合'))
-        else if (status !== 'completed' && status !== 'interrupted')
+        }
+        else if (turn.interrupted) {
+          turn.finish(new BridgeError('BRIDGE_ABORTED', '回合已取消'))
+        }
+        else if (status === 'failed') {
+          const message = optionalString(record(completed.error ?? {}).message) ?? turn.lastError ?? 'Codex 回合失败'
+          turn.finish(new BridgeError('BRIDGE_NATIVE_TURN', message))
+        }
+        else {
           turn.finish(new BridgeError('BRIDGE_NATIVE_TURN', `Codex 回合以 ${status} 结束`))
-        else
-          turn.finish(turn.interrupted ? new BridgeError('BRIDGE_ABORTED', '回合已取消') : undefined)
+        }
         return
       }
-      case 'error':
+      case 'error': {
+        // Codex reports recoverable errors mid-turn and keeps going. The turn's
+        // verdict is turn/completed's status, so this only remembers the text
+        // for a turn that does end failed.
         if (params.willRetry !== true)
-          turn.finish(new BridgeError('BRIDGE_NATIVE_TURN', optionalString(record(params.error ?? {}).message) ?? JSON.stringify(params.error ?? params)))
+          turn.lastError = optionalString(record(params.error ?? {}).message) ?? turn.lastError
         return
+      }
       case 'item/agentMessage/delta':
       case 'item/plan/delta': {
         const id = stringField(params, 'itemId')
@@ -377,26 +484,33 @@ export class CodexSession implements KernelSession {
         turn.yieldEvent({ type: 'text', id, delta })
         return
       }
-      case 'item/reasoning/summaryTextDelta':
-      case 'item/reasoning/textDelta': {
+      case 'item/reasoning/summaryTextDelta': {
+        // A summary is the publishable form of the reasoning: it wins outright.
         const id = stringField(params, 'itemId')
         const delta = stringField(params, 'delta')
-        const name = `${id}:${method === 'item/reasoning/textDelta' ? 'raw' : 'summary'}`
-        turn.thinking.set(name, (turn.thinking.get(name) ?? '') + delta)
-        if (!turn.track.has(id))
-          turn.track.set(id, name)
-        if (turn.track.get(id) === name)
+        turn.summarized.add(id)
+        turn.thinking.set(`${id}:summary`, (turn.thinking.get(`${id}:summary`) ?? '') + delta)
+        turn.yieldEvent({ type: 'thinking', id, delta })
+        return
+      }
+      case 'item/reasoning/textDelta': {
+        // Raw reasoning shows only for an item that streamed no summary; it is
+        // still recorded, so the completed item does not repeat it either.
+        const id = stringField(params, 'itemId')
+        const delta = stringField(params, 'delta')
+        turn.thinking.set(`${id}:raw`, (turn.thinking.get(`${id}:raw`) ?? '') + delta)
+        if (!turn.summarized.has(id))
           turn.yieldEvent({ type: 'thinking', id, delta })
         return
       }
-      case 'item/commandExecution/outputDelta':
-      case 'item/fileChange/outputDelta': {
-        const tool = turn.tools.get(stringField(params, 'itemId'))
+      case 'item/commandExecution/outputDelta': {
+        const id = stringField(params, 'itemId')
+        const tool = turn.tools.get(id)
         if (tool !== undefined) {
           const delta = optionalString(params.delta) ?? ''
           tool.output += delta
           if (delta !== '')
-            turn.yieldEvent({ type: 'tool-output', id: stringField(params, 'itemId'), delta })
+            turn.yieldEvent({ type: 'tool-output', id, delta })
         }
         return
       }
@@ -447,10 +561,10 @@ export class CodexSession implements KernelSession {
     }
     let text = ''
     if (type === 'reasoning') {
-      text = arrayText(item.summary) || turn.thinking.get(`${id}:summary`) || arrayText(item.content) || turn.thinking.get(`${id}:raw`) || ''
-      // Same rule for reasoning: a streamed track is authoritative.
-      if (turn.thinking.has(`${id}:summary`) || turn.thinking.has(`${id}:raw`))
-        text = ''
+      // Same rule as the deltas: anything already streamed is authoritative, so
+      // the completed item only fills in when nothing reached the UI.
+      if (!turn.summarized.has(id) && !turn.thinking.has(`${id}:raw`))
+        text = arrayText(item.summary) || arrayText(item.content)
     }
     else if (type === 'enteredReviewMode' || type === 'exitedReviewMode') {
       text = optionalString(item.review) ?? ''

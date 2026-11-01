@@ -5,7 +5,7 @@
  * `AbortSignal` and yields parsed events. All errors surface as thrown
  * `KernelApiError` with the host's message intact.
  */
-import type { InstallEvent, KernelState, ThirdPartyKernelId, TurnEvent } from '../../shared/protocol'
+import type { InstallEvent, KernelModel, KernelState, ThirdPartyKernelId, TurnEvent, TurnOptions } from '../../shared/protocol'
 import { ROUTES } from '../../shared/protocol'
 
 export class KernelApiError extends Error {
@@ -82,7 +82,7 @@ export interface OpenedSession {
   id: string
   kernel: ThirdPartyKernelId
   cwd: string
-  models: string[]
+  models: KernelModel[]
 }
 
 /** Start a kernel conversation. */
@@ -91,9 +91,26 @@ export async function openSession(kernel: ThirdPartyKernelId, cwd: string, signa
   return await response.json() as OpenedSession
 }
 
-/** Run one turn, streaming its events. */
-export async function* runTurn(id: string, text: string, signal: AbortSignal): AsyncGenerator<TurnEvent> {
-  const response = await post(ROUTES.turn, { id, text }, signal)
+/**
+ * Read one kernel's model catalogue.
+ *
+ * Separate from {@link openSession} on purpose: the composer needs the list on
+ * arrival, before any conversation exists, so the host answers this from a
+ * short-lived handshake that is disposed before the response is written.
+ */
+export async function fetchModels(kernel: ThirdPartyKernelId, cwd: string, signal?: AbortSignal): Promise<KernelModel[]> {
+  const response = await post(ROUTES.models, { kernel, cwd }, signal)
+  const payload = await response.json() as { models?: KernelModel[] }
+  return Array.isArray(payload.models) ? payload.models : []
+}
+
+/**
+ * Run one turn, streaming its events.
+ * `options` is sent as `{ options: { … } }` — the shape the host's turn route
+ * reads — and omitted entirely when absent.
+ */
+export async function* runTurn(id: string, text: string, signal: AbortSignal, options?: TurnOptions): AsyncGenerator<TurnEvent> {
+  const response = await post(ROUTES.turn, options === undefined ? { id, text } : { id, text, options }, signal)
   yield* frames<TurnEvent>(response)
 }
 

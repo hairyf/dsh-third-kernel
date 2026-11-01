@@ -3,7 +3,7 @@
  * submissions into protocol frames, and translates native notifications into the
  * flattened events the browser UI renders.
  */
-import type { KernelQuestion, TurnEvent } from '../shared/protocol'
+import type { KernelModel, KernelQuestion, TurnEvent, TurnOptions } from '../shared/protocol'
 import type { JsonLinesProcess } from './transport'
 
 /** What the UI must answer to let a blocked native turn continue. */
@@ -14,9 +14,10 @@ export interface PendingApproval {
   details: string
 }
 
-/** One submitted user turn. */
+/** One submitted user turn, plus the composer's per-turn choices. */
 export interface TurnInput {
   text: string
+  options?: TurnOptions
 }
 
 /**
@@ -27,8 +28,8 @@ export interface KernelSession {
   readonly id: string
   /** Complete the native handshake before the session accepts a turn. */
   open: (signal: AbortSignal) => Promise<void>
-  /** Model ids the kernel advertises, for the composer's model row. */
-  models: (signal?: AbortSignal) => Promise<string[]>
+  /** Models and reasoning levels the kernel advertises, for the composer's row. */
+  models: (signal?: AbortSignal) => Promise<KernelModel[]>
   /**
    * Run one turn and stream its events. The generator ends after a terminal
    * `done` or `error`; aborting the signal interrupts the native turn.

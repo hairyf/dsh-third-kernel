@@ -1,60 +1,189 @@
 /*
  * dsh-taiwind entry.
  *
- * This file stays uncompiled in the package: the shared Tailwind compiler picks
- * up every complete class name from the built client bundle and emits one
- * stylesheet for all plugins. Only theme tokens and a few genuinely reusable
- * utilities live here, all prefixed `tk-` so nothing leaks into the official UI.
+ * Stays uncompiled in the package: the shared Tailwind compiler collects every
+ * complete class name from the built client bundle and emits one stylesheet for
+ * all plugins. Only the tokens and utilities the kernel surfaces actually paint
+ * with live here, all prefixed `tk-` so nothing leaks into the official UI.
  */
 @import "tailwindcss";
 
-@theme {
-  --color-tk-codex: #0a0a0a;
-  --color-tk-codex-muted: #6b6b6b;
-  --color-tk-codex-line: #e6e4e0;
+[data-dsh-third-kernel] {
+  /* Codex: cool neutral desktop chrome. Read through inline styles as well. */
   --color-tk-codex-paper: #ffffff;
-  --color-tk-codex-rail: #f7f6f4;
+  --color-tk-codex-muted: #8a8a90;
+  --color-tk-codex-line: #e9e9ec;
 
-  --color-tk-claude: #c8553d;
-  --color-tk-claude-muted: #6f6259;
-  --color-tk-claude-line: #e8e0d6;
-  --color-tk-claude-paper: #faf8f5;
-  --color-tk-claude-rail: #f3ede5;
+  /* Claude: warm paper. */
+  --color-tk-claude-paper: #ffffff;
+  --color-tk-claude-muted: #857a70;
+  --color-tk-claude-line: #e8e2da;
+
+  /* Both surfaces: the user turn bubble and the send affordance. */
+  --color-tk-blue: #3b7cf6;
+  --color-tk-bubble: #e4eefc;
+  /* Ink inside the bubble. Codex writes it near-black; Claude tints it blue. */
+  --color-tk-bubble-ink: #1b1b1f;
+  /* The primary send control: Codex fills a black pill, Claude its blue. */
+  --color-tk-accent: #111111;
 
   --font-tk-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  --font-tk-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-tk-sans: ui-sans-serif, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  /*
+   * The token names the kernel surfaces paint with. The official theme defines
+   * none of them, so `bg-card` / `text-foreground-subtle` … would otherwise
+   * emit nothing; the per-kernel blocks below override the values at runtime,
+   * because a utility resolves `var(--color-…)` on the element it lands on.
+   */
+  --color-background: #ffffff;
+  --color-foreground: #1b1b1f;
+  --color-card: #ffffff;
+  --color-border: #e9e9ec;
+  --color-secondary: #f3f3f5;
+  --color-destructive: #d13f26;
+  --color-foreground-subtle: color-mix(in oklab, #404040 60%, transparent);
+  --color-foreground-subtlest: color-mix(in oklab, #404040 40%, transparent);
+  --color-surface: color-mix(in oklab, #0a0a0a 3%, transparent);
+  --color-surface-hover: color-mix(in oklab, #0a0a0a 5%, transparent);
+
+  /* The UI type scale: text-ui-base is 14px, the rest ±1..4px. */
+  --text-ui-xl: 18px;
+  --text-ui-caption: 13px;
+  --text-ui-base: 14px;
+  --text-ui-sm: 12px;
+  --text-ui-xs: 10px;
+
+  --radius: 0.75rem;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* Scrollbars inside a kernel surface, which is not covered by the official theme. */
+/*
+ * A kernel surface carries none of the official global panel rows.
+ *
+ * 插件扩展 / 定时任务 / 更多 are ui-sidebar's own `nav[aria-label]` built from the
+ * `sidebar.panellist` slot (.hHd-Xa_panelList in its SidebarRoot.module.css), and
+ * the foot holds the account and settings menus. src/client/index.ts marks the
+ * document while a kernel is selected; the CSS-module hashes are the only
+ * address those rows have.
+ */
+/* ponytail: keyed to the installed build's CSS-module hash; if ui-sidebar ever
+   renames the panel row class, the rows come back — re-grep client.js then. */
+html[data-dsh-third-kernel-shell] nav:has(> .hHd-Xa_panelRow),
+html[data-dsh-third-kernel-shell] [class*="footArea"],
+html[data-dsh-third-kernel-shell="codex"] .SVAs4q_label,
+html[data-dsh-third-kernel-shell="claude"] .SVAs4q_label,
+html[data-dsh-third-kernel-shell="codex"] .nL4_yW_moreButton,
+html[data-dsh-third-kernel-shell="claude"] .nL4_yW_moreButton {
+  display: none;
+}
+
+/*
+ * 第三方内核的 hero 只留自己的标记。
+ *
+ * HeroShell 的标题组（「探索未至之境」+「预览版」胶囊）不是 slot：它硬编码在
+ * 官方 titleGroup 里 (ui-conversation/lib/client.js 的 HeroShell)，只能按 class
+ * 隐藏，再由 conversation.hero.brand.mark 的装饰体补上内核自己的 mark 与标语。
+ * 只写带值的两条——不带值的 html[data-dsh-third-kernel-shell] 在上面的侧栏规则里
+ * 已经用掉，该钩子在别的会话（DSH 内核）仍挂着，写在那里会把官方外观一起干掉。
+ */
+/* ponytail: keyed to the official CSS-module hash; a rename brings the title and
+   the badge back — re-grep HeroShell.module.css then, the shape is
+   [class*="titleGroup"] next to [class*="previewBadge"]. */
+html[data-dsh-third-kernel-shell="codex"] [class*="_titleGroup"],
+html[data-dsh-third-kernel-shell="claude"] [class*="_titleGroup"] {
+  display: none;
+}
+
+/*
+ * The reading register for assistant prose.
+ *
+ * Codex leaves body copy in the sans register it inherits; Claude sets prose in
+ * its serif — that is the single most visible difference between the two
+ * reference screenshots. Only the assistant column carries this class, so the
+ * chrome (header, chips, log meta) never picks up the serif.
+ */
+@utility tk-prose {
+  font-family: var(--font-tk-sans);
+}
+
+/*
+ * MarkdownText paints its own font-family on the blocks it renders, so the
+ * serif has to land on those blocks, not on the wrapper that inherits into
+ * nothing. Code spans and code blocks keep their mono face on purpose.
+ */
+[data-dsh-third-kernel="claude"] .tk-prose :where(p, li, blockquote, td, th, h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-tk-serif);
+}
+
+/* Scrollbars inside a kernel surface, which the official theme does not cover. */
 @utility tk-scroll {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
 }
 
-@utility tk-fade-in {
-  animation: tk-fade-in 160ms ease-out;
-}
-
-@keyframes tk-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @layer base {
   /*
-   * A kernel surface paints its own light palette, but the official theme sets an
-   * explicit `color` on form controls (white, for its dark theme) which would make
-   * every kernel button invisible. This reset lives in @layer base so Tailwind
-   * utilities — and any explicit text color a component sets — still win.
+   * The official shell runs the OS in dark colour-scheme, so the user agent
+   * paints every control with its dark default: ButtonFace rgb(107,107,107) on a
+   * button, a dark field on an input. Tailwind's preflight does not reach this
+   * tree either (the shared sheet emits theme + utilities only), so the reset
+   * lives here; utilities and explicit colours still win, this being the base
+   * layer.
    */
+  [data-dsh-third-kernel] {
+    /* Both surfaces are light registers; without this the OS dark scheme leaks
+       into scrollbars, form fields and selection colours. */
+    color-scheme: light;
+    font-family: var(--font-tk-sans);
+    -webkit-font-smoothing: antialiased;
+    background: var(--color-background);
+    color: var(--color-foreground);
+  }
+
   [data-dsh-third-kernel] :where(button, input, textarea, select) {
     color: inherit;
     font: inherit;
+    background-color: transparent;
+    background-image: none;
+    border: 0;
+  }
+
+  /* Codex: cool neutral desktop chrome. Its user turn is a grey card, not a
+     coloured bubble — the reference app keeps colour for state, not identity. */
+  [data-dsh-third-kernel="codex"] {
+    --color-background: #ffffff;
+    --color-foreground: #1b1b1f;
+    --color-card: #ffffff;
+    --color-tk-bubble: #f4f4f5;
+    --color-tk-bubble-ink: #1b1b1f;
+    --color-border: #e9e9ec;
+    --color-secondary: #f3f3f5;
+    --color-surface: color-mix(in oklab, #0a0a0a 3%, transparent);
+    --color-surface-hover: color-mix(in oklab, #0a0a0a 6%, transparent);
+    --color-foreground-subtle: color-mix(in oklab, #1b1b1f 62%, transparent);
+    --color-foreground-subtlest: color-mix(in oklab, #1b1b1f 42%, transparent);
+  }
+
+  /* Claude: warm paper. The serif register is for headings only — the body
+     stays sans, the way the reference app's chrome and prose read. */
+  [data-dsh-third-kernel="claude"] {
+    --color-background: #faf9f5;
+    --color-foreground: #2b2622;
+    --color-card: #fdfcf9;
+    --color-tk-accent: #3b7cf6;
+    /* Claude marks the user's own words in its blue, not in grey. */
+    --color-tk-bubble: #e7f0fb;
+    --color-tk-bubble-ink: #1f4e8c;
+    --color-border: #e8e2da;
+    --color-secondary: #f2ede6;
+    --color-surface: color-mix(in srgb, #857a70 8%, transparent);
+    --color-surface-hover: color-mix(in srgb, #857a70 14%, transparent);
+    --color-foreground-subtle: color-mix(in oklab, #2b2622 62%, transparent);
+    --color-foreground-subtlest: color-mix(in oklab, #2b2622 42%, transparent);
+    --radius: 0.75rem;
   }
 }

@@ -1,0 +1,6 @@
+[submodule "source/dsh-tui"]
+	path = source/dsh-tui
+	url = https://github.com/ccch1mneyyy/dsh-TUI
+[submodule "source/dsh-tauri"]
+	path = source/dsh-tauri
+	url = https://github.com/dsh-tauri/deepseek-harness-desktop.git

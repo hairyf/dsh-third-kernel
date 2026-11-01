@@ -37,11 +37,33 @@ export const ROUTES = {
   state: `${API_PREFIX}/state`,
   install: `${API_PREFIX}/install`,
   session: `${API_PREFIX}/session`,
+  models: `${API_PREFIX}/models`,
   turn: `${API_PREFIX}/turn`,
   answer: `${API_PREFIX}/answer`,
   interrupt: `${API_PREFIX}/interrupt`,
   close: `${API_PREFIX}/close`,
+  browse: `${API_PREFIX}/browse`,
 } as const
+
+/** One row of a directory listing. */
+export interface BrowseEntry {
+  name: string
+  path: string
+}
+
+/**
+ * A directory listing for the project picker.
+ *
+ * `parent` is null at a filesystem root; `roots` is non-empty only when no path
+ * was requested, so the picker can offer drives on Windows without guessing.
+ */
+export interface BrowseListing {
+  path: string
+  parent: string | null
+  dirs: BrowseEntry[]
+  roots?: BrowseEntry[]
+  error?: string
+}
 
 /** One kernel's locally detected install state. */
 export interface KernelState {
@@ -53,6 +75,47 @@ export interface KernelState {
   executable: string | null
   /** Correction-oriented hint shown next to a failed detection. */
   hint: string | null
+}
+
+/**
+ * One selectable model, normalised from both native catalogues.
+ *
+ * Codex reports `{ model, supportedReasoningEfforts }`; Claude reports
+ * `{ displayName, supportedEffortLevels }`. The composer needs the same shape
+ * from both, so the adapters flatten them here rather than the UI sniffing
+ * kernel-specific strings.
+ */
+export interface KernelModel {
+  /** Wire id handed back on the next turn. */
+  id: string
+  /** What the composer shows. */
+  label: string
+  /** Reasoning levels this model accepts, already human-readable. */
+  efforts: KernelEffort[]
+}
+
+export interface KernelEffort {
+  /** Wire id (`low`, `xhigh`, …). */
+  id: string
+  label: string
+}
+
+/**
+ * How much the kernel may do without asking.
+ *
+ * Both CLIs express this natively — Codex as `approvalPolicy` + `sandboxPolicy`,
+ * Claude as `--permission-mode` — so the mode is applied at turn or process
+ * start rather than simulated in the UI.
+ */
+export const PERMISSION_MODES = ['read-only', 'auto', 'full-access'] as const
+
+export type PermissionMode = (typeof PERMISSION_MODES)[number]
+
+/** Per-turn knobs the composer owns. */
+export interface TurnOptions {
+  model?: string
+  effort?: string
+  permission: PermissionMode
 }
 
 /** Events a turn stream may carry. Mirrors the two native protocols. */
