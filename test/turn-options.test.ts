@@ -21,6 +21,8 @@ import type { KernelCommand } from '../src/host/detect'
 import type { KernelSession } from '../src/host/session-types'
 import type { PermissionMode, TurnEvent, TurnOptions } from '../src/shared/protocol'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { runTurn } from '../src/client/lib/api'
@@ -81,12 +83,16 @@ function paramsOf(file: string, method: string): Record<string, unknown> {
   return (frame.params ?? {}) as Record<string, unknown>
 }
 
-/** Recorder files live in .temp/ and are removed when the run ends. */
+/**
+ * Recorder files live in the OS temp directory and are removed when the run
+ * ends: the repo's `.temp/` is git-ignored, so it does not exist on CI and the
+ * stub child would die on its first append.
+ */
 const records = new Set<string>()
 
 /** Where one stub child records the frames it received. */
 function recordPath(name: string): string {
-  const path = fileURLToPath(new URL(`../.temp/turn-options-${name}-${process.pid}.jsonl`, import.meta.url))
+  const path = join(tmpdir(), `dsh-third-kernel-turn-options-${name}-${process.pid}.jsonl`)
   records.add(path)
   return path
 }
