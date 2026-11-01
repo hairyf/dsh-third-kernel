@@ -32,10 +32,14 @@ export const KERNEL_SLOGAN: Record<ThirdPartyKernelId, string> = {
 /**
  * Blank-session hero headline per kernel, painted in the official 26px / 32px
  * row beside the mark. Codex names the workspace the session will work in (its
- * own app does the same); Claude keeps its standing greeting.
+ * own app does the same) and drops the name when the session is ungrouped (it
+ * belongs to no workspace), so the sentence never invents a directory. Claude
+ * keeps its standing greeting.
  */
 export function kernelHeroHeadline(backend: ThirdPartyKernelId, workspace: string): string {
-  return backend === 'codex' ? `你想让我们在 ${workspace} 中构建什么` : 'You\'re here!'
+  if (backend !== 'codex')
+    return 'You\'re here!'
+  return workspace === '' ? '我们要构建什么？' : `你想让我们在 ${workspace} 中构建什么`
 }
 
 /** Accent the Claude mark is painted with in the hero. */

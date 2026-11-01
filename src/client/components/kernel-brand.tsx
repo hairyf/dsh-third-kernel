@@ -6,8 +6,7 @@ import { CLAUDE_ICON_COLOR, KERNEL_META, KERNEL_SLOGAN, kernelHeroHeadline } fro
 import { backendFromIdentity } from '../service/kernel-identity'
 import { kernelStore } from '../store/modules/kernel-store'
 import { useStore } from '../store/reactive'
-import { ClaudeIcon, FishLogo, GptIcon } from './index'
-import { KernelIcon } from './kernel-icon'
+import { ClaudeIcon, CodexHeroMark, FishLogo, GptIcon } from './index'
 
 export function KernelHeroBrand({ size, className, Original }: KernelHeroBrandProps): ReactElement {
   const { selected, workspace } = useStore(kernelStore)
@@ -26,7 +25,12 @@ export function KernelHeroBrand({ size, className, Original }: KernelHeroBrandPr
       aria-label={KERNEL_META[selected].label}
     >
       <span className={className} style={{ display: 'inline-flex', flex: 'none' }}>
-        <KernelIcon backend={selected} size={Math.round(size * 0.74)} color={selected === 'claude' ? CLAUDE_ICON_COLOR : undefined} />
+        {/* The hero uses the user-supplied Codex asset; every other surface keeps
+            the standard `GptIcon` (via `KernelIcon`). Claude's hero mark is
+            tinted with its accent. */}
+        {selected === 'codex'
+          ? <CodexHeroMark width={Math.round(size * 0.74)} height={Math.round(size * 0.74)} />
+          : <ClaudeIcon width={Math.round(size * 0.74)} height={Math.round(size * 0.74)} color={CLAUDE_ICON_COLOR} />}
       </span>
       <span style={{ fontSize: 26, lineHeight: '32px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {kernelHeroHeadline(selected, workspace)}
