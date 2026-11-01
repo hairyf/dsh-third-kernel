@@ -5,11 +5,11 @@ import { PLUGIN_ID } from '../../shared/constants'
 import { getBackends } from '../apis'
 import { registerSlotDecoration } from '../components'
 import { HeroKernel } from '../components/hero-kernel'
-import { KernelHeroBrand, KernelLineage } from '../components/kernel-brand'
+import { KernelLineage } from '../components/kernel-brand'
 import { ModelKernel } from '../components/model-kernel'
 import { SessionKernel } from '../components/session-kernel'
 import { SessionKernelHover } from '../components/session-kernel-hover'
-import { HERO_AGENT_PRESET_SLOT, KERNEL_HERO_BRAND_SLOT, KERNEL_LINEAGE_SLOT, MODEL_KERNEL_SLOT, SIDEBAR_KERNEL_HOVER_SLOT, SIDEBAR_KERNEL_SLOT } from '../constants'
+import { HERO_AGENT_PRESET_SLOT, KERNEL_LINEAGE_SLOT, MODEL_KERNEL_SLOT, SIDEBAR_KERNEL_HOVER_SLOT, SIDEBAR_KERNEL_SLOT } from '../constants'
 import { defineRegister } from '../lib/register'
 import { backendFromIdentity, kernelFromList } from '../service/kernel-identity'
 import { canLockModelEntry } from '../service/kernel-model'
@@ -146,16 +146,6 @@ export const kernel = defineRegister((controller, ctx: ClientContext) => {
     empty: true,
     accept: canLockModelEntry,
     inject: () => ({ ensureProjection, ...nativeModels }),
-    warn,
-  }))
-  controller.add(registerSlotDecoration(slots, {
-    slot: KERNEL_HERO_BRAND_SLOT,
-    scope: 'root',
-    registrant: PLUGIN_ID,
-    mode: 'wrap',
-    component: KernelHeroBrand,
-    empty: true,
-    inject: () => ({}),
     warn,
   }))
   controller.add(registerSlotDecoration(slots, {

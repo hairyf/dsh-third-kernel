@@ -29,15 +29,14 @@
 * **样式**：经 [dsh-taiwind](https://github.com/hairyf/dsh-taiwind) 共享编译。`src/main.css` 是未编译的 CSS-first 入口，在 `package.json` 以 `dsh.taiwind` 声明。
   * 自定义 token/工具类一律 `tk-` 前缀，避免污染官方主题。
   * 需要覆盖官方 CSS module 的**非分层**声明时用 `!` 前缀工具类（如 `min-w-[248px]!`）。
-  * 官方 hero 标题组（探索未至之境 / 预览版）不是 slot，只能按 class 片段隐藏（当前用 `[class*="_titleGroup"]`，锚定 CSS module 的稳定片段而非哈希全名）。
   * 内核配色作用在 `[data-dsh-third-kernel]` 上；只有 `html[data-dsh-third-kernel-shell="codex|claude"]` 由 `useKernelShell` 写入，整页换肤尚未接线。
 * **生命周期**：所有监听/定时器/子进程都必须有 disposer，由 `ctx.effect()` 或 `LifecycleController` 托管；卸载插件不得留下孤儿进程。
 
 ## 4. Slot 与宿主安全规则
 
 * **装饰方式**：`registerSlotDecoration` 对 `single` 槽注册优先级 **官方 - 1** 的包装（同优先级重复注册会抛错），`wrap` 模式把官方组件作为 `Original` 传入；官方渲染器带 `children` 时**不要**转发 `children`（`SlotCore` 会因重复声明子槽抛错），改为注入 passthrough `renderSlot`。
-* **生效槽位**：`conversation.hero.agentPreset`（内核选择器）、`conversation.hero.brand.mark`（品牌标记）、`conversation.session.header.lineage`（会话标识）、`conversation.input.model`（模型选择器）、`sidebar.session.row.leading` / `.hover`。
-* **身份发布**：`useKernelShell` 同时供 hero 与会话头使用——任一时刻只有一个挂载，两处都必须调用，否则品牌标记与 `预览版` 不跟随。
+* **生效槽位**：`conversation.hero.agentPreset`（内核选择器）、`conversation.session.header.lineage`（会话标识）、`conversation.input.model`（模型选择器）、`sidebar.session.row.leading` / `.hover`。**不**接管 `conversation.hero.brand.mark`：hero 标题区（鲸鱼 / 探索未至之境 / 预览版）完全交回官方渲染。
+* **身份发布**：`useKernelShell` 只维护 `html[data-dsh-third-kernel-shell]` 这个 CSS 钩子（侧栏样式用），hero 与会话头各调一次——任一时刻只有一个挂载，两处都必须调用。
 * **禁止**注册 `root` 或 `shell.overlay` 接管层：会永久遮蔽官方 AppFrame 且销毁官方会话状态。
 * **宿主侧**：CLI 只从 PATH 解析；Windows `.cmd` 包装器必须指向厂商官方入口才解析执行，否则拒绝（否则即命令注入）。
 * **API**：仅注册在 `connection.fetch`（已带 Host/Origin 与鉴权栅栏），并自行校验方法、路径与 body。

@@ -81,22 +81,6 @@ html[data-dsh-third-kernel-shell="claude"] .nL4_yW_moreButton {
   display: none;
 }
 
-/*
- * 第三方内核的 hero 只留自己的标记。
- *
- * HeroShell 的标题组（「探索未至之境」+「预览版」胶囊）不是 slot：它硬编码在
- * 官方 titleGroup 里 (ui-conversation/lib/client.js 的 HeroShell)，只能按 class
- * 隐藏，再由 conversation.hero.brand.mark 的装饰体补上内核自己的 mark 与标语。
- * 只写带值的两条——不带值的 html[data-dsh-third-kernel-shell] 在上面的侧栏规则里
- * 已经用掉，该钩子在别的会话（DSH 内核）仍挂着，写在那里会把官方外观一起干掉。
- */
-/* ponytail: keyed to the official CSS-module hash; a rename brings the title and
-   the badge back — re-grep HeroShell.module.css then, the shape is
-   [class*="titleGroup"] next to [class*="previewBadge"]. */
-html[data-dsh-third-kernel-shell="codex"] [class*="_titleGroup"],
-html[data-dsh-third-kernel-shell="claude"] [class*="_titleGroup"] {
-  display: none;
-}
 
 /*
  * The reading register for assistant prose.

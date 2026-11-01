@@ -1,55 +1,21 @@
 import type { ReactElement } from 'react'
 import type { BackendId } from '../../shared/types'
-import type { KernelHeroBrandProps, KernelLineageProps } from './slot-contract'
+import type { KernelLineageProps } from './slot-contract'
 import { useEffect } from 'react'
-import { CLAUDE_ICON_COLOR, KERNEL_META, KERNEL_SLOGAN, kernelHeroHeadline } from '../constants'
+import { KERNEL_META, KERNEL_SLOGAN } from '../constants'
 import { backendFromIdentity } from '../service/kernel-identity'
-import { kernelStore } from '../store/modules/kernel-store'
-import { useStore } from '../store/reactive'
-import { ClaudeIcon, CodexHeroMark, FishLogo, GptIcon } from './index'
-
-export function KernelHeroBrand({ size, className, Original }: KernelHeroBrandProps): ReactElement {
-  const { selected, workspace } = useStore(kernelStore)
-  if (selected !== 'codex' && selected !== 'claude')
-    return Original ? <Original size={size} className={className} /> : <FishLogo size={size} className={className} />
-  // The mark replaces the whale *and* the official title group (探索未至之境 /
-  // 预览版), which main.css hides while a kernel is selected: the hero then
-  // carries the kernel's own mark and headline, in the official type scale.
-  // The glyph takes the fish's 25px height so the 32px headline row never grows.
-  // No wrap: the headline ellipses instead of pushing the row taller. The
-  // official `fish` class (hover swim animation) rides the icon alone, not the
-  // whole mark: animating the headline text was the reported bug.
-  return (
-    <span
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0 }}
-      aria-label={KERNEL_META[selected].label}
-    >
-      <span className={className} style={{ display: 'inline-flex', flex: 'none' }}>
-        {/* The hero uses the user-supplied Codex asset; every other surface keeps
-            the standard `GptIcon` (via `KernelIcon`). Claude's hero mark is
-            tinted with its accent. */}
-        {selected === 'codex'
-          ? <CodexHeroMark width={Math.round(size * 0.74)} height={Math.round(size * 0.74)} />
-          : <ClaudeIcon width={Math.round(size * 0.74)} height={Math.round(size * 0.74)} color={CLAUDE_ICON_COLOR} />}
-      </span>
-      <span style={{ fontSize: 26, lineHeight: '32px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {kernelHeroHeadline(selected, workspace)}
-      </span>
-    </span>
-  )
-}
+import { ClaudeIcon, GptIcon } from './index'
 
 /**
- * Publish the kernel identity the two shell consumers read: the brand mark
- * (kernelStore) and the CSS hooks (data-dsh-third-kernel-shell).
+ * Publish the kernel identity as the `data-dsh-third-kernel-shell` CSS hook.
  *
- * Both the hero picker and the session header own a copy of the identity, and
+ * The hero picker and the session header each own a copy of the identity and
  * only one of them is mounted at a time — the hero hides the header — so the
- * hook runs in both.
+ * hook runs in both. Keeping the attribute in sync is all this does now: the
+ * hero brand mark and its headline are left to the official renderer.
  */
-export function useKernelShell(backend: BackendId | undefined, workspace?: string): void {
+export function useKernelShell(backend: BackendId | undefined): void {
   useEffect(() => {
-    kernelStore.patch({ selected: backend, ...workspace === undefined ? {} : { workspace } })
     const root = document.documentElement
     if (backend !== 'codex' && backend !== 'claude') {
       root.removeAttribute('data-dsh-third-kernel-shell')
@@ -59,10 +25,8 @@ export function useKernelShell(backend: BackendId | undefined, workspace?: strin
     return () => {
       if (root.getAttribute('data-dsh-third-kernel-shell') === backend)
         root.removeAttribute('data-dsh-third-kernel-shell')
-      if (kernelStore.getSnapshot().selected === backend)
-        kernelStore.patch({ selected: undefined })
     }
-  }, [backend, workspace])
+  }, [backend])
 }
 
 export function KernelLineage(props: KernelLineageProps): ReactElement | null {
