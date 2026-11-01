@@ -19,7 +19,7 @@
 使用命令行安装：
 
 ```sh
-dsh plugin add dsh-office-kit
+dsh plugin add dsh-third-kernel
 ```
 
 - 样式走 [dsh-taiwind](https://github.com/hairyf/dsh-taiwind) 共享编译。
