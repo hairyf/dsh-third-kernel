@@ -9,6 +9,9 @@
  */
 import type { TokenUsage, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { NativeContent, NativeSink } from '../src/host/backends/types'
+import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
@@ -36,8 +39,8 @@ function prompt(): UserMessage[] {
 }
 
 /** One stub child per mode; the mode is the argument the fixture reads. */
-function command(mode: string): { file: string, args: string[] } {
-  return { file: process.execPath, args: [FIXTURE, mode] }
+function command(mode: string, record?: string): { file: string, args: string[] } {
+  return { file: process.execPath, args: [FIXTURE, mode, ...record === undefined ? [] : [record]] }
 }
 
 describe('codex protocol', () => {
@@ -50,6 +53,23 @@ describe('codex protocol', () => {
     finally {
       await session.dispose()
     }
+  })
+
+  it('enables request_user_input on the thread it opens', { timeout: 20_000 }, async () => {
+    const { sink } = recorder()
+    const record = join(tmpdir(), `dsh-third-kernel-codex-config-${process.pid}.jsonl`)
+    const session = await createCodexSession(command('usage', record), process.cwd(), null, sink, AbortSignal.timeout(10_000))
+    try {
+      await session.submit(prompt(), AbortSignal.timeout(10_000))
+    }
+    finally {
+      await session.dispose()
+    }
+    // Without this gate the model reports "request_user_input is unavailable in
+    // Default mode" instead of raising the question our handler answers.
+    const frames = readFileSync(record, 'utf8').split('\n').filter(line => line.trim() !== '').map(line => JSON.parse(line) as Record<string, unknown>)
+    const start = frames.find(frame => frame.method === 'thread/start')
+    expect(start?.params).toMatchObject({ config: { tools: { experimental_request_user_input: { enabled: true } } } })
   })
 
   it('reports token usage with cache counts kept apart from input', { timeout: 20_000 }, async () => {

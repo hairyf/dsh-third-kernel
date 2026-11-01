@@ -55,7 +55,15 @@ export function HeroKernel(props: HeroKernelProps): ReactElement | null {
   const backend = bound === 'codex' || bound === 'claude' ? bound : undefined
   // The hero owns the identity while the session header (KernelLineage) is not
   // mounted; publish it from here so the brand mark and 预览版 badge follow.
-  useKernelShell(backend)
+  // The workspace label feeds the Codex headline ("你想让我们在 X 中构建什么").
+  // Mirror the official chip: the session's workspace title, else the cwd
+  // basename, else the default workspace the picker will create.
+  const sessionWorkspace = props.sessionId === undefined ? undefined : workspaces.find(workspace => workspace.sessionIds.includes(props.sessionId as never))
+  const cwd = summary?.cwd ?? ''
+  const basename = cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? ''
+  const rawLabel = sessionWorkspace?.title ?? basename ?? ''
+  const workspaceLabel = rawLabel === '' || rawLabel === 'default-workspace' ? '默认工作区' : rawLabel
+  useKernelShell(backend, workspaceLabel)
 
   const roster = new Map(store.backends.map(item => [item.id, item]))
   const workspaceBySession = new Map(workspaces.flatMap(workspace => workspace.sessionIds.map(id => [id, workspace.workspaceId] as const)))

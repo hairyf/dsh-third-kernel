@@ -7,9 +7,12 @@
  *  - `usage`: reports `thread/tokenUsage/updated` with cache counts folded into
  *    inputTokens, as OpenAI's own breakdown does.
  */
+import { appendFileSync } from 'node:fs'
 import process from 'node:process'
 
 const mode = process.argv[2]
+/** Optional recorder path (argv[3]); every received frame is appended there. */
+const record = process.argv[3]
 
 function send(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`)
@@ -17,6 +20,8 @@ function send(value) {
 
 function handle(message) {
   const { id, method } = message
+  if (record !== undefined)
+    appendFileSync(record, `${JSON.stringify(message)}\n`)
   if (id === undefined)
     return
   if (method === 'initialize') {

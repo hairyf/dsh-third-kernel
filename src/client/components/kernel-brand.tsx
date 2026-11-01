@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import type { BackendId } from '../../shared/types'
 import type { KernelHeroBrandProps, KernelLineageProps } from './slot-contract'
 import { useEffect } from 'react'
-import { KERNEL_META, KERNEL_SLOGAN } from '../constants'
+import { CLAUDE_ICON_COLOR, KERNEL_META, KERNEL_SLOGAN, kernelHeroHeadline } from '../constants'
 import { backendFromIdentity } from '../service/kernel-identity'
 import { kernelStore } from '../store/modules/kernel-store'
 import { useStore } from '../store/reactive'
@@ -10,22 +10,26 @@ import { ClaudeIcon, FishLogo, GptIcon } from './index'
 import { KernelIcon } from './kernel-icon'
 
 export function KernelHeroBrand({ size, className, Original }: KernelHeroBrandProps): ReactElement {
-  const { selected } = useStore(kernelStore)
+  const { selected, workspace } = useStore(kernelStore)
   if (selected !== 'codex' && selected !== 'claude')
     return Original ? <Original size={size} className={className} /> : <FishLogo size={size} className={className} />
   // The mark replaces the whale *and* the official title group (探索未至之境 /
   // 预览版), which main.css hides while a kernel is selected: the hero then
-  // carries only the kernel's own mark and slogan, in the official type scale.
+  // carries the kernel's own mark and headline, in the official type scale.
   // The glyph takes the fish's 25px height so the 32px headline row never grows.
+  // No wrap: the headline ellipses instead of pushing the row taller. The
+  // official `fish` class (hover swim animation) rides the icon alone, not the
+  // whole mark: animating the headline text was the reported bug.
   return (
     <span
-      className={className}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0 }}
       aria-label={KERNEL_META[selected].label}
     >
-      <KernelIcon backend={selected} size={Math.round(size * 0.74)} />
-      <span style={{ fontSize: 26, lineHeight: '32px', fontWeight: 500, whiteSpace: 'nowrap' }}>
-        {KERNEL_SLOGAN[selected]}
+      <span className={className} style={{ display: 'inline-flex', flex: 'none' }}>
+        <KernelIcon backend={selected} size={Math.round(size * 0.74)} color={selected === 'claude' ? CLAUDE_ICON_COLOR : undefined} />
+      </span>
+      <span style={{ fontSize: 26, lineHeight: '32px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {kernelHeroHeadline(selected, workspace)}
       </span>
     </span>
   )
@@ -39,9 +43,9 @@ export function KernelHeroBrand({ size, className, Original }: KernelHeroBrandPr
  * only one of them is mounted at a time — the hero hides the header — so the
  * hook runs in both.
  */
-export function useKernelShell(backend: BackendId | undefined): void {
+export function useKernelShell(backend: BackendId | undefined, workspace?: string): void {
   useEffect(() => {
-    kernelStore.patch({ selected: backend })
+    kernelStore.patch({ selected: backend, ...workspace === undefined ? {} : { workspace } })
     const root = document.documentElement
     if (backend !== 'codex' && backend !== 'claude') {
       root.removeAttribute('data-dsh-third-kernel-shell')
@@ -54,7 +58,7 @@ export function useKernelShell(backend: BackendId | undefined): void {
       if (kernelStore.getSnapshot().selected === backend)
         kernelStore.patch({ selected: undefined })
     }
-  }, [backend])
+  }, [backend, workspace])
 }
 
 export function KernelLineage(props: KernelLineageProps): ReactElement | null {

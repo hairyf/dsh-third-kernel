@@ -21,16 +21,25 @@ export const HERO_COPY: Record<ThirdPartyKernelId, { title: string, input: strin
 }
 
 /**
- * Short provider label shown alongside each kernel's mark.
- *
- * Both are Chinese on purpose: the hero headline next to them is 官方中文
- * （探索未至之境），an English slogan would read as a different product. Kept to
- * six glyphs so the 26px headline row never wraps on a narrow window.
+ * Short provider label shown alongside each kernel's mark in the session
+ * header chip. Kept short so the 11px chip never wraps.
  */
 export const KERNEL_SLOGAN: Record<ThirdPartyKernelId, string> = {
   codex: 'Codex 内核',
   claude: 'Claude 内核',
 }
+
+/**
+ * Blank-session hero headline per kernel, painted in the official 26px / 32px
+ * row beside the mark. Codex names the workspace the session will work in (its
+ * own app does the same); Claude keeps its standing greeting.
+ */
+export function kernelHeroHeadline(backend: ThirdPartyKernelId, workspace: string): string {
+  return backend === 'codex' ? `你想让我们在 ${workspace} 中构建什么` : 'You\'re here!'
+}
+
+/** Accent the Claude mark is painted with in the hero. */
+export const CLAUDE_ICON_COLOR = '#DE7356'
 
 export const HERO_AGENT_PRESET_SLOT = 'conversation.hero.agentPreset'
 export const KERNEL_HERO_BRAND_SLOT = 'conversation.hero.brand.mark'

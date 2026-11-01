@@ -8,6 +8,20 @@ const INITIALIZATION = {
   capabilities: { experimentalApi: true },
 }
 
+/**
+ * Config every thread runs under.
+ *
+ * `request_user_input` is gated off in Default mode unless its experimental tool
+ * switch is on; without it the model reports "request_user_input is unavailable
+ * in Default mode" instead of raising the question our `item/tool/requestUserInput`
+ * handler answers. The switch is a `tools` config table (verified against codex
+ * 0.162's config schema: `tools.experimental_request_user_input.enabled` is a
+ * boolean, sibling to `tools.update_plan.enabled`).
+ */
+const THREAD_CONFIG = {
+  tools: { experimental_request_user_input: { enabled: true } },
+}
+
 const CODEX_REASONING_EFFORT_NAMES = new Map([
   ['none', 'Off'],
   ['minimal', 'Minimal'],
@@ -204,6 +218,7 @@ class CodexSession implements NativeSession {
         // deprecated for paginated threads: it only inflates every resume/fork
         // handshake with turns this bridge throws away and adds a deprecation notice.
         ...forkFrom !== undefined || storedId !== null ? { excludeTurns: true } : {},
+        config: THREAD_CONFIG,
         ...permission?.approval === undefined ? {} : { approvalPolicy: permission.approval === 'never' ? 'never' : 'on-request' },
         ...permission?.sandbox === undefined ? {} : { sandbox: permission.sandbox },
       }, signal))
@@ -697,11 +712,28 @@ class CodexSession implements NativeSession {
           this.sink.thinking(id, delta)
         return
       }
+      case 'item/reasoning/summaryPartAdded': {
+        // A new reasoning summary part starts a paragraph; without this the
+        // separated parts run together (source/dsh-tui/src/backends/codex/translate/live.ts:143-147).
+        const id = stringField(params, 'itemId')
+        if (turn.liveThinking.get(id) === `${id}:summary`)
+          this.sink.thinking(id, '\n\n')
+        return
+      }
       case 'item/commandExecution/outputDelta':
       case 'item/fileChange/outputDelta': {
         const tool = turn.tools.get(stringField(params, 'itemId'))
         if (tool)
           tool.output += typeof params.delta === 'string' ? params.delta : ''
+        return
+      }
+      case 'item/commandExecution/terminalInteraction': {
+        // Stdin typed into a live terminal, echoed into the tool output
+        // (source/dsh-tui/src/backends/codex/translate/live.ts:156-164).
+        const tool = turn.tools.get(stringField(params, 'itemId'))
+        const stdin = typeof params.stdin === 'string' ? params.stdin : ''
+        if (tool && stdin !== '')
+          tool.output += `⏎ ${stdin}`
         return
       }
       case 'item/started':

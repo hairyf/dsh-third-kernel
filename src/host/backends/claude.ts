@@ -502,6 +502,14 @@ class ClaudeSession implements NativeSession {
       case 'system':
         if (message.subtype === 'session_state_changed') {
           run.state = stringField(message, 'state')
+          // `idle` is the CLI's backstop for a turn that never got its `result`
+          // (source/dsh-tui/src/backends/claude/translate/system.ts:175-184):
+          // without it a lost result frame stranded the turn on finish()'s
+          // `resultReceived` guard forever.
+          if (run.state === 'idle' && !run.resultReceived) {
+            run.error ??= new NativeBridgeError('BRIDGE_NATIVE_INTERRUPTED', 'Claude went idle without reporting a turn result')
+            run.resultReceived = true
+          }
           this.finish(run)
         }
         else if (message.subtype === 'task_started') {
