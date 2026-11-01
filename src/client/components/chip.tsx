@@ -21,7 +21,9 @@ export const Chip = forwardRef<HTMLButtonElement, ChipProps>(({ variant, icon, b
   const style = variants[variant]
   const wraps = variant !== 'selector'
   const base = ['inline-flex items-center border-none rounded-sm bg-transparent font-medium cursor-pointer disabled:cursor-default', style.base].join(' ')
-  const chevronClass = ['inline-flex shrink-0 text-[var(--dsw-alias-label-caption)] [&_svg]:w-[11px] [&_svg]:h-[11px]', style.chevron].join(' ')
+  // 14px matches the official seats' own chevron (cubgiG_chevron /
+  // _7KE1Ra_chevron); 11px read visibly smaller beside them.
+  const chevronClass = ['inline-flex shrink-0 text-[var(--dsw-alias-label-caption)] [&_svg]:w-[14px] [&_svg]:h-[14px]', style.chevron].join(' ')
   return (
     <button type="button" className={className === undefined ? base : [base, className].join(' ')} {...rest} ref={ref}>
       {wraps && icon != null ? <span className={['inline-flex shrink-0', style.icon].join(' ')} aria-hidden>{icon}</span> : icon}

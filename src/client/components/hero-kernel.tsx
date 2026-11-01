@@ -120,7 +120,11 @@ export function HeroKernel(props: HeroKernelProps): ReactElement | null {
             <Chip
               ref={chipRef}
               variant="seat"
-              className={`h-full rounded-none bg-transparent hover:not-disabled:bg-transparent aria-expanded:bg-transparent${clearable ? ' pr-0' : ''}`}
+              // `!` is load-bearing: the chip's own `aria-expanded:bg-hover` is the
+              // same utility and would win on stylesheet order, painting a second
+              // grey rounded rect over the label while the menu is open. The pill
+              // outside this button owns the highlight, so the button paints none.
+              className={`h-full rounded-none bg-transparent! hover:not-disabled:bg-transparent! aria-expanded:bg-transparent!${clearable ? ' pr-0' : ''}`}
               icon={<KernelIcon backend={backend} />}
               chevron={clearable ? undefined : <ChevronDown />}
               open={expanded}
@@ -151,13 +155,15 @@ export function HeroKernel(props: HeroKernelProps): ReactElement | null {
               aria-label={locale.text('kernel.clear')}
               title={locale.text('kernel.clear')}
               data-bridge-kernel-clear=""
-              className="inline-flex shrink-0 cursor-pointer items-center self-stretch border-none bg-transparent pl-[4px] pr-[8px] text-[var(--dsw-alias-label-caption)] disabled:cursor-default [&_svg]:w-[11px] [&_svg]:h-[11px]"
+              className="inline-flex shrink-0 cursor-pointer items-center self-stretch border-none bg-transparent pl-[4px] pr-[8px] text-[var(--dsw-alias-label-caption)] disabled:cursor-default"
               onClick={clear}
             >
-              <span className="inline-flex group-hover:hidden group-focus-visible:hidden" data-bridge-kernel-chevron="">
+              {/* Chevron matches the official seat's 14px; the close X is a
+                  glyph inside the same 14px box but stays visually lighter. */}
+              <span className="inline-flex group-hover:hidden group-focus-visible:hidden [&_svg]:w-[14px] [&_svg]:h-[14px]" data-bridge-kernel-chevron="">
                 <ChevronDown />
               </span>
-              <span className="hidden group-hover:inline-flex group-focus-visible:inline-flex" data-bridge-kernel-clear-icon="">
+              <span className="hidden group-hover:inline-flex group-focus-visible:inline-flex [&_svg]:w-[11px] [&_svg]:h-[11px]" data-bridge-kernel-clear-icon="">
                 <Xmark />
               </span>
             </button>
