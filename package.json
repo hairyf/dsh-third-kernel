@@ -1,7 +1,7 @@
 {
   "name": "dsh-third-kernel",
   "type": "module",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "packageManager": "pnpm@11.15.1",
   "description": "Third-party kernels for DeepSeek Harness: switch the whole app to local Codex or Claude Code, each with its own native interface.",
   "author": "Hairy <wwu710632@gmail.com>",
