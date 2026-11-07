@@ -23,26 +23,12 @@ interface KernelBinding {
   nativeSessionId: string;
   sessionId: string;
 }
-interface KernelProjectionState {
-  readonly ownerSessionId: string;
-  readonly inheritedEventCount: number;
-  readonly inheritedBinding: KernelBinding | null;
-  readonly binding: KernelBinding | null;
-}
-declare module '@deepseek-ai/dsh-session-projection/types' {
+declare module '@deepseek-ai/dsh-session-projection' {
   interface SessionProjectionMap {
     bridgeModel: NativeTurnOptions;
     bridgeKernel: KernelBinding | null;
   }
-  interface SessionProjectionStateMap {
-    bridgeModel: NativeTurnOptions;
-    bridgeKernel: KernelProjectionState;
-  }
 }
-//#endregion
-//#region src/host/config/constants.d.ts
-declare const KERNEL_RECORD_TYPE = "plugin:dsh-tauri-kernel/kernel";
-declare const MODEL_RECORD_TYPE = "plugin:dsh-tauri-kernel/model";
 //#endregion
 //#region src/host/types/index.d.ts
 interface PlatformLoader {
@@ -63,23 +49,6 @@ type HostContext = Context & {
   connection: HostConnectionHandle;
   loader: PlatformLoader;
 };
-type BridgeRecordType = typeof KERNEL_RECORD_TYPE | typeof MODEL_RECORD_TYPE;
-interface RecordWatermark {
-  readonly type: BridgeRecordType;
-  readonly seq: number;
-  readonly encodedData: string;
-}
-interface BridgeCheckpointState {
-  readonly ownerSessionId: string;
-  readonly inheritedEventCount: number;
-  readonly binding: RecordWatermark | null;
-  readonly model: RecordWatermark | null;
-}
-declare module '@deepseek-ai/dsh-session-projection/types' {
-  interface SessionProjectionStateMap {
-    bridgeCheckpoint: BridgeCheckpointState;
-  }
-}
 //#endregion
 //#region src/host/apply.d.ts
 declare function apply(ctx: HostContext, config?: Config): void;

@@ -85,9 +85,8 @@ export const adapter = {
     }
     if (decision.kind !== 'enter' || payload.signal.aborted)
       return decision
-    const ctx = getHostContext()
     await session.repairInherited(payload.agent, payload.signal)
-    const binding = ctx.sessionProjections.stateOf(payload.agent.session, 'bridgeKernel')?.binding
+    const binding = identity.stateOf(payload.agent.session)?.binding
     if (binding === null || binding === undefined) {
       if (payload.agent.session.requestHeader()?.config.provider === BRIDGE_PROVIDER)
         throw new Error('BRIDGE_BINDING_MISSING: 原生内核的官方身份记录缺失。')
@@ -103,7 +102,7 @@ export const adapter = {
   async request(payload: { agent: Agent, signal: AbortSignal }, next: () => Promise<LlmCallConfig>): Promise<LlmCallConfig> {
     const config = await next()
     const ctx = getHostContext()
-    const projected = ctx.sessionProjections.stateOf(payload.agent.session, 'bridgeKernel')?.binding
+    const projected = identity.stateOf(payload.agent.session)?.binding
     if (projected === null || projected === undefined) {
       if (config.provider === BRIDGE_PROVIDER || payload.agent.session.requestHeader()?.config.provider === BRIDGE_PROVIDER)
         throw new Error('BRIDGE_BINDING_MISSING: 原生内核的官方身份记录缺失。')
@@ -140,8 +139,8 @@ export const adapter = {
     if (!admitted || admitted.dispatched || admitted.request !== undefined || admitted.signal !== options.signal)
       throw new Error('BRIDGE_STEP_UNAVAILABLE: 没有对应的官方已接纳回合。')
     assertLive(admitted.agent, options.signal)
-    const boundary = ctx.sessionProjections.stateOf(admitted.agent.session, 'turnBoundary')
-    if (boundary?.lastTurn !== admitted.turn || boundary.openTurnStartSeq === null || boundary.lastStepBoundary?.kind !== 'start' || boundary.lastStepBoundary.seq !== boundary.lastStepStartSeq)
+    const boundary = ctx.agents.turnBoundaryOf(admitted.agent.session)
+    if (boundary.lastTurn !== admitted.turn || boundary.openTurnStartSeq === null || boundary.lastStepBoundary?.kind !== 'start' || boundary.lastStepBoundary.seq !== boundary.lastStepStartSeq)
       throw new Error('BRIDGE_STEP_UNAVAILABLE: 官方回合边界不再有效。')
     admitted.request = options
     try {

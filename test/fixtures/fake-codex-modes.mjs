@@ -8,11 +8,18 @@
  *    inputTokens, as OpenAI's own breakdown does.
  */
 import { appendFileSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import process from 'node:process'
 
 const mode = process.argv[2]
-/** Optional recorder path (argv[3]); every received frame is appended there. */
-const record = process.argv[3]
+/**
+ * Optional recorder path (argv[3]); every received frame is appended there.
+ * The adapter appends the real CLI arguments after this fixture's own, so a run
+ * without a recorder still has argv[3] — it is then the literal `app-server`.
+ * Only an absolute path can be a recorder; anything else would drop a junk file
+ * into the working directory.
+ */
+const record = process.argv[3] !== undefined && isAbsolute(process.argv[3]) ? process.argv[3] : undefined
 
 function send(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`)

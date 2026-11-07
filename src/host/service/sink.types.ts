@@ -37,7 +37,6 @@ export interface SinkState {
   assistants: Map<string, string>
   tools: Map<string, ToolTrack>
   registrations: Map<string, () => void | Promise<void>>
-  restoreMode: () => void | Promise<void>
   queue: StreamChunk[]
   queuedBytes: number
   outputBytes: number

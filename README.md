@@ -25,6 +25,13 @@ dsh plugin add dsh-third-kernel
 - 样式走 [dsh-taiwind](https://github.com/hairyf/dsh-taiwind) 共享编译。
 - 装完在 **设置 → 插件** 里确认已启用。
 
+### DSH 版本要求
+
+本插件只适配 **DSH 0.2.2-rc.1 及以上的 0.2.2 线**，并在 `package.json` 的 `peerDependencies` 里固定该版本线（`^0.2.2-rc.1`，cordis `^4.1.0`）：不满足时 DSH 会在安装阶段直接拒绝加载，而不是让插件在半坏状态下运行。
+
+- **不再支持旧版 DSH**。0.2.2 把 `sessionProjections.register()` 改为返回 `ProjectionHandle`、移除了 registry 级 `stateOf`，把工具呈现从 `tools.presentAs()` 换成 `tools.setExecutor()`，并把 `permissions` 投影压缩成预设名——本插件已按新接口重写，旧版本没有对应实现。
+- 手动绕过 peer 检查装上时，后端探测会把该核心标成「协议不兼容」，切换器里的内核保持禁用。
+
 ## 前置条件
 
 | 内核 | 本机需要 | 探测方式 |
@@ -60,6 +67,22 @@ pnpm run typecheck
 pnpm run test    # 先 build 再 vitest
 pnpm run build
 ```
+
+### 适配的 DSH API（0.2.2-rc.1）
+
+| 能力 | 旧接入（≤ 0.2.1） | 现接入（0.2.2-rc.1） |
+| --- | --- | --- |
+| 会话投影 | `sessionProjections.register()` 同步返回 disposer，registry 级 `stateOf(session, key)` | 注册 await 得到 `ProjectionHandle`，插件自己保留句柄且只用 `handle.stateOf(session)` |
+| 工具呈现 | `agent.ctx.tools.presentAs('native')` | `agent.ctx.tools.setExecutor(new NativeToolExecutor(agent.ctx))`（每 scope 只能有一个执行器） |
+| 会话权限 | `permissions` 投影带 `sandbox` / `approval` | `ctx.sandboxPolicy.overrideOf()` + `ctx.approval.overrideOf()`（投影现在只保留预设名） |
+| 回合边界 | `turnBoundary` 投影 | `ctx.agents.turnBoundaryOf(session)`（投影降级为宿主内部单元） |
+| 插件记录 | 可选导出，缺失即静默降级 | `appendPluginRecord` / `pluginRecordOf` 为硬依赖，缺失即 `BRIDGE_CORE_UNAVAILABLE` |
+
+### 验证状态
+
+- `pnpm run typecheck`、`pnpm run build`（含 publint）在本机通过。
+- `vitest` 的协议回归（codex-protocol / claude-backends / persistence / turn-options-contract / api-snapshot / 宿主路由）全部通过。
+- `test/codex-session.test.ts`、`test/codex-text.test.ts`、`test/turn-options.test.ts` 的第 4 跳会真实启动本机 Codex CLI；本机 CLI 已安装但上游账号返回 `403 账户余额不足`，因此这三处失败属于外部账号状态，未改断言掩盖。
 
 ### 子仓库
 

@@ -1,5 +1,6 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId } from '@deepseek-ai/dsh-session'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type { NativeModelCatalog, NativeModelDirectory, NativeTurnOptions } from '../../shared/native-model'
 import type { HostContext } from '../types'
 import { MODEL_RECORD_TYPE } from '../config/constants'
@@ -11,8 +12,11 @@ import { checkpoint } from './checkpoint'
 import { identity } from './identity'
 import { session } from './session'
 
+/** Retained handle: the registry-level `stateOf` is deprecated in DSH 0.2.2. */
+let handle: ProjectionHandle<NativeTurnOptions> | undefined
+
 export const model = {
-  async register(): Promise<() => void> {
+  async register(): Promise<() => void | Promise<void>> {
     const ctx = getHostContext()
     const lifetime = runtime.lifetime
     const z = await loadRuntimeZod(ctx.loader)
@@ -34,7 +38,7 @@ export const model = {
       defaultModel: identifier.optional(),
       defaultReasoningEffort: identifier.optional(),
     })
-    const unregister = ctx.sessionProjections.register({
+    const registered = await ctx.sessionProjections.register({
       key: 'bridgeModel',
       stateSchema: optionsSchema,
       init: () => ({ model: null, reasoningEffort: null }),
@@ -47,20 +51,32 @@ export const model = {
       wire: { viewSchema: optionsSchema, view: state => state },
       stateVersion: 1,
     })
+    lifetime.signal.throwIfAborted()
+    if (runtime.lifetime !== lifetime || getHostContext() !== ctx) {
+      await registered.dispose()
+      throw new Error('BRIDGE_DISPOSED: Model projection owner changed during registration')
+    }
+    handle = registered
     runtime.optionsSchema = optionsSchema
     runtime.catalogSchema = catalogSchema
-    return () => {
-      unregister()
+    return async () => {
+      if (handle === registered)
+        handle = undefined
       if (runtime.optionsSchema === optionsSchema)
         runtime.optionsSchema = undefined
       if (runtime.catalogSchema === catalogSchema)
         runtime.catalogSchema = undefined
+      await registered.dispose()
     }
   },
 
+  /** Folded native turn options of one official session. */
+  stateOf(value: Session): NativeTurnOptions | undefined {
+    return handle?.stateOf(value)
+  },
+
   resolve(agent: Agent): NativeTurnOptions {
-    const ctx = getHostContext()
-    const value = ctx.sessionProjections.stateOf(agent.session, 'bridgeModel')
+    const value = model.stateOf(agent.session)
     if (value === undefined)
       throw new Error('BRIDGE_CORE_UNAVAILABLE: 原生模型投影不可用。')
     return parseOptions(value)
@@ -105,8 +121,6 @@ export const model = {
       const ctx = getHostContext()
       const modules = await waitFor(loadRuntimeModules(ctx.loader), lifetime.signal)
       assertLive(agent, lifetime)
-      if (typeof modules.appendPluginRecord !== 'function' || typeof modules.pluginRecordOf !== 'function')
-        throw new Error('BRIDGE_CORE_UNAVAILABLE: 原生模型选择的官方记录接口不可用。')
       const current = model.resolve(agent)
       if (!sameOptions(current, next)) {
         const cursor = agent.session.seq

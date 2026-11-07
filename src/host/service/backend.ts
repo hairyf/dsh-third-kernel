@@ -1,5 +1,6 @@
 import type { BackendDetection } from '../../shared/types'
 import type { DetectedCommand } from '../utils/detection'
+import { KERNEL_CORE_BASELINE, kernelVersionAtLeast } from '../../shared/version'
 import { runtime } from '../config/runtime'
 import { getHostConfig, getHostContext } from '../context'
 import { detectBackend } from '../utils/detection'
@@ -12,8 +13,8 @@ export const backend = {
     const config = getHostConfig()
     const result = await detectBackend(id, id === 'codex' ? config.codexPath : config.claudePath, { timeoutMs: config.probeTimeoutMs })
     try {
-      const modules = await loadRuntimeModules(ctx.loader)
-      if (!runtime.ready || typeof modules.appendPluginRecord !== 'function' || typeof modules.pluginRecordOf !== 'function' || typeof ctx.sessions.get !== 'function' || typeof ctx.sessionProjections.stateOf !== 'function')
+      await loadRuntimeModules(ctx.loader)
+      if (!runtime.ready || typeof ctx.sessions.get !== 'function' || typeof ctx.agents.turnBoundaryOf !== 'function')
         throw new Error('BRIDGE_CORE_UNAVAILABLE: 当前核心未提供完整的官方内核桥接接口。')
       runtime.lifetime.signal.throwIfAborted()
       result.detection.bridgeReady = true
@@ -32,6 +33,18 @@ export const backend = {
   async getCatalog(): Promise<BackendDetection[]> {
     const ctx = getHostContext()
     const results = await Promise.all([backend.resolve('codex'), backend.resolve('claude')])
-    return [{ id: 'dsh', installed: true, auth: 'ok', version: await runtimeVersion(ctx.loader), drift: false, hint: null }, ...results.map(result => result.detection)]
+    const version = await runtimeVersion(ctx.loader)
+    // `package.json` pins the supported core line through peerDependencies, and
+    // this report turns a manually overridden install into a visible refusal
+    // instead of a half-working bridge on an API the plugin no longer targets.
+    const supported = kernelVersionAtLeast(version)
+    return [{
+      id: 'dsh',
+      installed: true,
+      auth: 'ok',
+      version,
+      drift: supported === false,
+      hint: supported === false ? `BRIDGE_CORE_UNSUPPORTED: 需要 DSH ${KERNEL_CORE_BASELINE} 或更新的核心。` : null,
+    }, ...results.map(result => result.detection)]
   },
 }

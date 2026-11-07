@@ -20,6 +20,8 @@ export const runtime = {
   modelWrites: new Map<Agent, Promise<void>>(),
   checkpoints: new Map<Agent, Promise<void>>(),
   verified: new Map<Agent, Map<BridgeRecordType, RecordWatermark>>(),
+  /** Agents whose scope already selects the official native tool executor. */
+  executors: new WeakSet<Agent>(),
   bindingSchema: undefined as z.ZodType<KernelBinding> | undefined,
   optionsSchema: undefined as z.ZodType<NativeTurnOptions> | undefined,
   catalogSchema: undefined as z.ZodType<NativeModelCatalog> | undefined,
@@ -60,6 +62,7 @@ export async function resetRuntime(): Promise<void> {
   runtime.modelWrites.clear()
   runtime.checkpoints.clear()
   runtime.verified.clear()
+  runtime.executors = new WeakSet()
   runtime.detections.clear()
   const outcomes = await Promise.allSettled(entries.map(entry => entry.session.dispose()))
   const failures = [...disposed, ...outcomes].filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')

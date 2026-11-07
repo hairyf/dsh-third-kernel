@@ -106,7 +106,7 @@ export const session = {
 
   async createInherited(source: Session, create: (signal?: AbortSignal) => Promise<AgentHandle>): Promise<AgentHandle> {
     const ctx = getHostContext()
-    const state = ctx.sessionProjections.stateOf(source, 'bridgeKernel')
+    const state = identity.stateOf(source)
     if (state?.binding === null || state?.binding === undefined) {
       if ((state?.inheritedBinding !== null && state?.inheritedBinding !== undefined) || source.requestHeader()?.config.provider === BRIDGE_PROVIDER)
         throw new Error('BRIDGE_BINDING_MISSING: 源会话尚未完成原生绑定，不能派生工作树会话。')
@@ -140,8 +140,7 @@ export const session = {
   },
 
   async prepare(source: Session, agent: Agent, signal: AbortSignal): Promise<AgentSetupCommit | void> {
-    const ctx = getHostContext()
-    const state = ctx.sessionProjections.stateOf(source, 'bridgeKernel')
+    const state = identity.stateOf(source)
     const binding = state?.binding
     if (binding === null || binding === undefined) {
       if ((state?.inheritedBinding !== null && state?.inheritedBinding !== undefined) || source.requestHeader()?.config.provider === BRIDGE_PROVIDER)
@@ -158,7 +157,7 @@ export const session = {
 
   async repairInherited(agent: Agent, signal: AbortSignal): Promise<void> {
     const ctx = getHostContext()
-    const state = ctx.sessionProjections.stateOf(agent.session, 'bridgeKernel')
+    const state = identity.stateOf(agent.session)
     const scoped = AbortSignal.any([signal, runtime.lifetime.signal])
     if (state?.binding !== null && state?.binding !== undefined)
       return
@@ -229,8 +228,7 @@ export const session = {
   },
 
   async execute(input: NativeExecution): Promise<OfficialSink> {
-    const ctx = getHostContext()
-    if (input.binding.sessionId !== input.agent.session.id || !sameBinding(ctx.sessionProjections.stateOf(input.agent.session, 'bridgeKernel')?.binding, input.binding))
+    if (input.binding.sessionId !== input.agent.session.id || !sameBinding(identity.stateOf(input.agent.session)?.binding, input.binding))
       throw new Error('BRIDGE_BINDING_MISMATCH: 不能替换已有会话的原生内核。')
     input.signal.throwIfAborted()
     const current = runtime.exchanges.get(input.agent.id)
@@ -375,7 +373,7 @@ async function bindFork(agent: Agent, source: KernelBinding, signal: AbortSignal
         scoped.throwIfAborted()
         agent.ctx.fiber.assertActive()
         assertForkSource(parent, agent, source)
-        if (runtime.lifetime !== lifetime || !runtime.ready || !sameBinding(identity.resolve(agent), entry.binding) || ctx.sessionProjections.stateOf(agent.session, 'bridgeKernel')?.inheritedBinding?.sessionId !== agent.session.header.parentSession)
+        if (runtime.lifetime !== lifetime || !runtime.ready || !sameBinding(identity.resolve(agent), entry.binding) || identity.stateOf(agent.session)?.inheritedBinding?.sessionId !== agent.session.header.parentSession)
           throw new Error('BRIDGE_BINDING_NOT_COMMITTED: 工作树原生身份未写入官方投影。')
       },
     }
@@ -406,8 +404,7 @@ async function resolveParent(sessionId: string, signal: AbortSignal): Promise<Ag
 }
 
 function assertForkSource(parent: Session, child: Agent, binding: KernelBinding): void {
-  const ctx = getHostContext()
-  if (parent.id !== child.session.header.parentSession || parent.seq !== child.session.inheritedEventCount || !sameBinding(ctx.sessionProjections.stateOf(parent, 'bridgeKernel')?.binding, binding))
+  if (parent.id !== child.session.header.parentSession || parent.seq !== child.session.inheritedEventCount || !sameBinding(identity.stateOf(parent)?.binding, binding))
     throw new Error('BRIDGE_FORK_SOURCE_CHANGED: 父会话与当前继承前缀不一致，请重新创建工作树会话。')
 }
 
@@ -541,11 +538,18 @@ function activeSink(agent: Agent, controller: AbortController): NativeSink {
   return exchange.state.native
 }
 
+/**
+ * DSH 0.2.2 replaced the single `permissions` projection payload (sandbox and
+ * approval knobs) with `PermissionSelection` (a preset name only). The two knob
+ * owners expose their own session override again, so read them where they live.
+ */
 function permissionOf(value: Session): NativePermission | undefined {
-  const state = getHostContext().sessionProjections.stateOf(value, 'permissions')
-  if (!state || (state.sandbox === null && state.approval === null))
+  const ctx = getHostContext()
+  const sandbox = ctx.get('sandboxPolicy')?.overrideOf(value)
+  const approval = ctx.approval.overrideOf(value)
+  if (sandbox === undefined && approval === undefined)
     return undefined
-  return { sandbox: state.sandbox ?? undefined, approval: state.approval ?? undefined }
+  return { sandbox, approval }
 }
 
 function sameBinding(left: KernelBinding | null | undefined, right: KernelBinding): boolean {

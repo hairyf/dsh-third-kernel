@@ -1,13 +1,18 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { BridgeRecordType, RecordWatermark } from '../types'
+import type { Session } from '@deepseek-ai/dsh-session'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
+import type { BridgeCheckpointState, BridgeRecordType, RecordWatermark } from '../types'
 import { KERNEL_RECORD_TYPE, MODEL_RECORD_TYPE } from '../config/constants'
 import { runtime } from '../config/runtime'
 import { getHostContext } from '../context'
 import { waitFor } from '../utils/abort'
 import { loadRuntimeZod } from '../utils/runtime-modules'
 
+/** Retained handle: the registry-level `stateOf` is deprecated in DSH 0.2.2. */
+let handle: ProjectionHandle<BridgeCheckpointState> | undefined
+
 export const checkpoint = {
-  async register(): Promise<() => void> {
+  async register(): Promise<() => void | Promise<void>> {
     const ctx = getHostContext()
     const lifetime = runtime.lifetime
     const z = await loadRuntimeZod(ctx.loader)
@@ -19,7 +24,7 @@ export const checkpoint = {
       seq: z.number().int().nonnegative(),
       encodedData: z.string(),
     }).strict().readonly().nullable()
-    return ctx.sessionProjections.register({
+    const registered = await ctx.sessionProjections.register({
       key: 'bridgeCheckpoint',
       stateSchema: z.object({
         ownerSessionId: z.string().min(1),
@@ -39,6 +44,22 @@ export const checkpoint = {
       },
       stateVersion: 1,
     })
+    lifetime.signal.throwIfAborted()
+    if (runtime.lifetime !== lifetime || getHostContext() !== ctx) {
+      await registered.dispose()
+      throw new Error('BRIDGE_DISPOSED: Checkpoint projection owner changed during registration')
+    }
+    handle = registered
+    return async () => {
+      if (handle === registered)
+        handle = undefined
+      await registered.dispose()
+    }
+  },
+
+  /** Folded checkpoint watermark state of one official session. */
+  stateOf(value: Session): BridgeCheckpointState | undefined {
+    return handle?.stateOf(value)
   },
 
   mark(agent: Agent, type: BridgeRecordType, seq: number, data: unknown): void {
@@ -78,8 +99,7 @@ export const checkpoint = {
 }
 
 function watermarks(agent: Agent): RecordWatermark[] {
-  const ctx = getHostContext()
-  const state = ctx.sessionProjections.stateOf(agent.session, 'bridgeCheckpoint')
+  const state = checkpoint.stateOf(agent.session)
   if (!state || state.ownerSessionId !== agent.id || state.inheritedEventCount !== agent.session.inheritedEventCount)
     throw new Error('BRIDGE_CORE_UNAVAILABLE: 官方会话记录的持久化投影不可用。')
   return [state.model, agent.session.header.isSeeded ? state.binding : null].filter((value): value is RecordWatermark => value !== null)
