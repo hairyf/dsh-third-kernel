@@ -26,8 +26,8 @@ export interface RuntimeModules {
   ToolCallId: typeof LlmRuntime.ToolCallId
   LlmAdapter: typeof LlmRuntime.LlmAdapter
   isAgentLoopRequest: typeof LlmRuntime.isAgentLoopRequest
-  appendPluginRecord?: (session: Session, type: 'plugin:dsh-tauri-kernel/kernel' | 'plugin:dsh-tauri-kernel/model', data: KernelBinding | NativeTurnOptions) => number
-  pluginRecordOf?: (event: SessionEvent) => { type: string, data: unknown } | undefined
+  appendPluginRecord: (session: Session, type: 'plugin:dsh-tauri-kernel/kernel' | 'plugin:dsh-tauri-kernel/model', data: KernelBinding | NativeTurnOptions) => number
+  pluginRecordOf: (event: SessionEvent) => { type: string, data: unknown } | undefined
 }
 
 export interface AdmittedStep {
@@ -75,12 +75,6 @@ export interface BridgeCheckpointState {
   readonly inheritedEventCount: number
   readonly binding: RecordWatermark | null
   readonly model: RecordWatermark | null
-}
-
-declare module '@deepseek-ai/dsh-session-projection/types' {
-  interface SessionProjectionStateMap {
-    bridgeCheckpoint: BridgeCheckpointState
-  }
 }
 
 export interface NativePending {

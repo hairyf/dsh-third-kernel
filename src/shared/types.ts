@@ -25,14 +25,9 @@ export interface KernelProjectionState {
   readonly binding: KernelBinding | null
 }
 
-declare module '@deepseek-ai/dsh-session-projection/types' {
+declare module '@deepseek-ai/dsh-session-projection' {
   interface SessionProjectionMap {
     bridgeModel: NativeTurnOptions
     bridgeKernel: KernelBinding | null
-  }
-
-  interface SessionProjectionStateMap {
-    bridgeModel: NativeTurnOptions
-    bridgeKernel: KernelProjectionState
   }
 }

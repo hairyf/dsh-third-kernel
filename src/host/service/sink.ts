@@ -1,12 +1,12 @@
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { PostToolDecision, PreToolDecision, ToolDispatchExecution, ToolExecution, ToolExecutionResult, ToolRunContext } from '@deepseek-ai/dsh-tools'
-import type { NativeExecution } from '../types'
+import type { HostContext, NativeExecution } from '../types'
 import type { NativeToolResult, OfficialSink, SinkState, StreamTrack, ToolTrack } from './sink.types'
 import { Buffer } from 'node:buffer'
 import { isDeepStrictEqual } from 'node:util'
 import { runtime } from '../config/runtime'
 import { getHostContext } from '../context'
-import { loadRuntimeModules } from '../utils/runtime-modules'
+import { loadNativeExecutor, loadRuntimeModules } from '../utils/runtime-modules'
 
 const MAX_QUEUED_CHUNKS = 8_192
 const MAX_QUEUED_BYTES = 8 * 1_024 * 1_024
@@ -22,6 +22,13 @@ export const sink = {
     runtime.lifetime.signal.throwIfAborted()
     if (runtime.exchanges.has(agent.id))
       throw new Error('BRIDGE_BUSY: 此会话已有原生回合。')
+    // The native turn replays the kernel's tool calls through the official
+    // pipeline as model-direct calls. A PTC presentation rejects those as
+    // UNKNOWN_TOOL, so this agent scope selects the official native executor —
+    // once per agent, for as long as its scope lives: `setExecutor` owns an
+    // effect on that scope, and a released record would leave the next prompt
+    // assembly with no usable executor at all.
+    await ensureNativeExecutor(ctx, agent, signal)
     const controller = new AbortController()
     const state: SinkState = {
       input,
@@ -31,7 +38,6 @@ export const sink = {
       assistants: new Map(),
       tools: new Map(),
       registrations: new Map(),
-      restoreMode: agent.ctx.tools.presentAs('native'),
       queue: [],
       queuedBytes: 0,
       outputBytes: 0,
@@ -277,10 +283,9 @@ export const sink = {
         state.disposal = (async () => {
           const outcomes = await Promise.allSettled([...state.registrations.values()].map(dispose => Promise.resolve().then(dispose)))
           state.registrations.clear()
-          const mode = await Promise.allSettled([Promise.resolve().then(state.restoreMode)])
           if (runtime.exchanges.get(agent.id) === official)
             runtime.exchanges.delete(agent.id)
-          const failures = [...outcomes, ...mode].filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+          const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
           if (failures.length > 0)
             throw new AggregateError(failures.map(failure => failure.reason), 'BRIDGE_TOOLS_DISPOSE_FAILED')
         })()
@@ -389,6 +394,36 @@ export const sink = {
     }
     return undefined
   },
+}
+
+/**
+ * Make the bridged agent's own scope select the official native executor. DSH
+ * 0.2.2 allows exactly one executor per scope and its disposer clears the
+ * selection, so this installs the executor once per agent and lets the agent's
+ * scope own the effect. A preset that already selected another presentation is
+ * refused loudly instead of silently degrading into `UNKNOWN_TOOL` results.
+ */
+async function ensureNativeExecutor(ctx: HostContext, agent: NativeExecution['agent'], signal: AbortSignal): Promise<void> {
+  if (runtime.executors.has(agent))
+    return
+  let NativeToolExecutor
+  try {
+    NativeToolExecutor = await loadNativeExecutor(ctx.loader)
+  }
+  catch (cause) {
+    throw new Error('BRIDGE_CORE_UNAVAILABLE: 官方原生工具执行器不可用，无法回放本机内核的工具调用。', { cause })
+  }
+  signal.throwIfAborted()
+  try {
+    // The effect lives on `agent.ctx`, so the selection is released with the
+    // agent's own scope — never mid-session, which would strand the next
+    // prompt assembly without an executor.
+    agent.ctx.tools.setExecutor(new NativeToolExecutor(agent.ctx))
+  }
+  catch (cause) {
+    throw new Error('BRIDGE_TOOL_PRESENTATION_UNSUPPORTED: 此会话的预设已选定其它工具呈现方式，原生内核不能回放工具调用。', { cause })
+  }
+  runtime.executors.add(agent)
 }
 
 function createTool(name: string, arguments_: string): ToolTrack {

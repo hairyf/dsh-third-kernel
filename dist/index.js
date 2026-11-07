@@ -26,6 +26,8 @@ const runtime = {
 	modelWrites: /* @__PURE__ */ new Map(),
 	checkpoints: /* @__PURE__ */ new Map(),
 	verified: /* @__PURE__ */ new Map(),
+	/** Agents whose scope already selects the official native tool executor. */
+	executors: /* @__PURE__ */ new WeakSet(),
 	bindingSchema: void 0,
 	optionsSchema: void 0,
 	catalogSchema: void 0,
@@ -63,6 +65,7 @@ async function resetRuntime() {
 	runtime.modelWrites.clear();
 	runtime.checkpoints.clear();
 	runtime.verified.clear();
+	runtime.executors = /* @__PURE__ */ new WeakSet();
 	runtime.detections.clear();
 	const outcomes = await Promise.allSettled(entries.map((entry) => entry.session.dispose()));
 	const failures = [...disposed, ...outcomes].filter((outcome) => outcome.status === "rejected");
@@ -102,6 +105,53 @@ async function readBody(request) {
 	}
 	if (body === null || typeof body !== "object" || Array.isArray(body)) throw new RequestError("BRIDGE_REQUEST_INVALID: 请求体必须是 JSON 对象。");
 	return body;
+}
+//#endregion
+//#region src/shared/version.ts
+/**
+* The single DSH core baseline this plugin supports. `package.json` pins the
+* same line through `peerDependencies`, so DSH refuses to load the plugin on
+* anything older and this constant only exists for runtime diagnostics and the
+* client-side capability gate.
+*/
+const KERNEL_CORE_BASELINE = "0.2.2-rc.1";
+function parse(version) {
+	const match = /^(\d+)\.(\d+)\.(\d+)(?:-([\d.a-z-]+))?(?:\+[\d.a-z-]+)?$/i.exec(version.trim());
+	if (match === null) return null;
+	return {
+		major: Number(match[1]),
+		minor: Number(match[2]),
+		patch: Number(match[3]),
+		pre: match[4] === void 0 ? [] : match[4].split(".").map((part) => /^\d+$/.test(part) ? Number(part) : part)
+	};
+}
+function comparePrerelease(left, right) {
+	if (left.length === 0 || right.length === 0) return left.length === right.length ? 0 : left.length === 0 ? 1 : -1;
+	for (let index = 0; index < Math.max(left.length, right.length); index++) {
+		const a = left[index];
+		const b = right[index];
+		if (a === void 0) return -1;
+		if (b === void 0) return 1;
+		if (a === b) continue;
+		if (typeof a === "number" && typeof b === "number") return a < b ? -1 : 1;
+		if (typeof a === "number") return -1;
+		if (typeof b === "number") return 1;
+		return a < b ? -1 : 1;
+	}
+	return 0;
+}
+/** Semver-ish comparison against the supported core baseline; `undefined` when unparseable. */
+function kernelVersionAtLeast(version, baseline = KERNEL_CORE_BASELINE) {
+	if (typeof version !== "string" || version.trim() === "") return void 0;
+	const left = parse(version);
+	const right = parse(baseline);
+	if (left === null || right === null) return void 0;
+	for (const key of [
+		"major",
+		"minor",
+		"patch"
+	]) if (left[key] !== right[key]) return left[key] > right[key];
+	return comparePrerelease(left.pre, right.pre) >= 0;
 }
 //#endregion
 //#region src/host/utils/detection.ts
@@ -298,20 +348,38 @@ async function probe(command, args, timeoutMs) {
 }
 //#endregion
 //#region src/host/utils/runtime-modules.ts
+/**
+* DSH 0.2.2 replaced `tools.presentAs('native')` with executor selection:
+* `tools.setExecutor(...)` is the one per-scope provider. Bridged sessions feed
+* native tool calls into the official pipeline as model-direct calls, which a
+* PTC presentation would reject as `UNKNOWN_TOOL`, so the scope must select the
+* official native executor for the duration of the native turn.
+*/
+async function loadNativeExecutor(loader) {
+	const module = await loader.import("@deepseek-ai/dsh-tool-executor-native");
+	const resolved = module?.NativeToolExecutor ?? loader.unwrapExports(module)?.NativeToolExecutor;
+	if (typeof resolved !== "function") throw new TypeError("BRIDGE_RUNTIME_EXPORT_MISSING: @deepseek-ai/dsh-tool-executor-native.NativeToolExecutor");
+	return resolved;
+}
 async function loadRuntimeZod(loader) {
 	const value = await loader.import("zod");
 	const resolved = value?.z ?? loader.unwrapExports(value)?.z;
 	if (typeof resolved?.object !== "function" || typeof resolved.string !== "function" || typeof resolved.enum !== "function" || typeof resolved.number !== "function" || typeof resolved.array !== "function") throw new TypeError("BRIDGE_RUNTIME_EXPORT_MISSING: zod.z");
 	return resolved;
 }
+/**
+* The runtime exports this plugin contracts on. Every one of them is part of
+* the pinned core line, so a missing export is a hard `BRIDGE_CORE_UNAVAILABLE`
+* — never a silent degraded mode on an older core.
+*/
 async function loadRuntimeModules(loader) {
 	const [llm, session] = await Promise.all([loader.import("@deepseek-ai/dsh-llm"), loader.import("@deepseek-ai/dsh-session")]);
 	return {
 		ToolCallId: resolveExport(loader, llm, "ToolCallId"),
 		LlmAdapter: resolveExport(loader, llm, "LlmAdapter"),
 		isAgentLoopRequest: resolveExport(loader, llm, "isAgentLoopRequest"),
-		appendPluginRecord: optionalExport(loader, session, "appendPluginRecord"),
-		pluginRecordOf: optionalExport(loader, session, "pluginRecordOf")
+		appendPluginRecord: resolveExport(loader, session, "appendPluginRecord"),
+		pluginRecordOf: resolveExport(loader, session, "pluginRecordOf")
 	};
 }
 function optionalExport(loader, value, key) {
@@ -351,8 +419,8 @@ const backend = {
 		const config = getHostConfig();
 		const result = await detectBackend(id, id === "codex" ? config.codexPath : config.claudePath, { timeoutMs: config.probeTimeoutMs });
 		try {
-			const modules = await loadRuntimeModules(ctx.loader);
-			if (!runtime.ready || typeof modules.appendPluginRecord !== "function" || typeof modules.pluginRecordOf !== "function" || typeof ctx.sessions.get !== "function" || typeof ctx.sessionProjections.stateOf !== "function") throw new Error("BRIDGE_CORE_UNAVAILABLE: 当前核心未提供完整的官方内核桥接接口。");
+			await loadRuntimeModules(ctx.loader);
+			if (!runtime.ready || typeof ctx.sessions.get !== "function" || typeof ctx.agents.turnBoundaryOf !== "function") throw new Error("BRIDGE_CORE_UNAVAILABLE: 当前核心未提供完整的官方内核桥接接口。");
 			runtime.lifetime.signal.throwIfAborted();
 			result.detection.bridgeReady = true;
 		} catch {
@@ -366,13 +434,15 @@ const backend = {
 	async getCatalog() {
 		const ctx = getHostContext();
 		const results = await Promise.all([backend.resolve("codex"), backend.resolve("claude")]);
+		const version = await runtimeVersion(ctx.loader);
+		const supported = kernelVersionAtLeast(version);
 		return [{
 			id: "dsh",
 			installed: true,
 			auth: "ok",
-			version: await runtimeVersion(ctx.loader),
-			drift: false,
-			hint: null
+			version,
+			drift: supported === false,
+			hint: supported === false ? `BRIDGE_CORE_UNSUPPORTED: 需要 DSH ${KERNEL_CORE_BASELINE} 或更新的核心。` : null
 		}, ...results.map((result) => result.detection)];
 	}
 };
@@ -406,6 +476,8 @@ async function waitFor(pending, signal) {
 }
 //#endregion
 //#region src/host/service/checkpoint.ts
+/** Retained handle: the registry-level `stateOf` is deprecated in DSH 0.2.2. */
+let handle$2;
 const checkpoint = {
 	async register() {
 		const ctx = getHostContext();
@@ -418,7 +490,7 @@ const checkpoint = {
 			seq: z.number().int().nonnegative(),
 			encodedData: z.string()
 		}).strict().readonly().nullable();
-		return ctx.sessionProjections.register({
+		const registered = await ctx.sessionProjections.register({
 			key: "bridgeCheckpoint",
 			stateSchema: z.object({
 				ownerSessionId: z.string().min(1),
@@ -448,6 +520,20 @@ const checkpoint = {
 			},
 			stateVersion: 1
 		});
+		lifetime.signal.throwIfAborted();
+		if (runtime.lifetime !== lifetime || getHostContext() !== ctx) {
+			await registered.dispose();
+			throw new Error("BRIDGE_DISPOSED: Checkpoint projection owner changed during registration");
+		}
+		handle$2 = registered;
+		return async () => {
+			if (handle$2 === registered) handle$2 = void 0;
+			await registered.dispose();
+		};
+	},
+	/** Folded checkpoint watermark state of one official session. */
+	stateOf(value) {
+		return handle$2?.stateOf(value);
 	},
 	mark(agent, type, seq, data) {
 		const watermark = watermarks(agent).find((record) => record.type === type);
@@ -480,7 +566,7 @@ const checkpoint = {
 	}
 };
 function watermarks(agent) {
-	const state = getHostContext().sessionProjections.stateOf(agent.session, "bridgeCheckpoint");
+	const state = checkpoint.stateOf(agent.session);
 	if (!state || state.ownerSessionId !== agent.id || state.inheritedEventCount !== agent.session.inheritedEventCount) throw new Error("BRIDGE_CORE_UNAVAILABLE: 官方会话记录的持久化投影不可用。");
 	return [state.model, agent.session.header.isSeeded ? state.binding : null].filter((value) => value !== null);
 }
@@ -528,6 +614,13 @@ function assertLive$2(agent, lifetime, signal) {
 }
 //#endregion
 //#region src/host/service/identity.ts
+/**
+* The retained projection handle. DSH 0.2.2 turned `sessionProjections.register`
+* into an awaitable that yields a `ProjectionHandle`; the deprecated
+* registry-level `stateOf(session, key)` returns `unknown` and logs a warning,
+* so every read in this plugin goes through the handle this module owns.
+*/
+let handle$1;
 const identity = {
 	async register() {
 		const ctx = getHostContext();
@@ -550,7 +643,7 @@ const identity = {
 		}).strict().readonly();
 		const projections = ctx.get("sessionProjections");
 		if (typeof projections?.register !== "function") throw new Error("BRIDGE_CORE_UNAVAILABLE: The official session projection registry is unavailable");
-		const unregister = projections.register({
+		const registered = await projections.register({
 			key: "bridgeKernel",
 			stateSchema,
 			init: (header, inheritedEventCount) => Object.freeze({
@@ -586,19 +679,30 @@ const identity = {
 			},
 			stateVersion: 2
 		});
+		lifetime.signal.throwIfAborted();
+		if (runtime.lifetime !== lifetime || getHostContext() !== ctx) {
+			await registered.dispose();
+			throw new Error("BRIDGE_DISPOSED: Kernel projection owner changed during registration");
+		}
+		handle$1 = registered;
 		runtime.bindingSchema = bindingSchema;
 		const dispose = ctx.on("agent/created", ({ agent, source }) => {
-			if (source !== "resume" || projections.stateOf(agent.session, "bridgeKernel")?.binding == null) return;
+			if (source !== "resume" || identity.stateOf(agent.session)?.binding == null) return;
 			const binding = identity.resolve(agent);
 			const fallback = ctx.get("agentDefaultModel")?.currentSelection();
 			if (agent.options.provider === void 0 && agent.options.model === void 0 || agent.options.provider === fallback?.provider && agent.options.model === fallback?.model) identity.hydrate(agent);
 			else if (agent.options.provider === "dsh-tauri-kernel" && agent.options.model === binding.backend) identity.hydrate(agent);
 		}, { global: true });
-		return () => {
+		return async () => {
 			dispose();
-			unregister();
+			if (handle$1 === registered) handle$1 = void 0;
 			if (runtime.bindingSchema === bindingSchema) runtime.bindingSchema = void 0;
+			await registered.dispose();
 		};
+	},
+	/** The committed kernel projection of one official session, or `undefined` before registration. */
+	stateOf(value) {
+		return handle$1?.stateOf(value);
 	},
 	hydrate(agent) {
 		const binding = identity.resolve(agent);
@@ -609,17 +713,12 @@ const identity = {
 		const candidate = parseBinding(binding);
 		if (candidate.sessionId !== agent.session.id) throw new Error("BRIDGE_INHERITED_SESSION: A native binding must belong to the exact official session");
 		const ctx = getHostContext();
-		const projections = ctx.get("sessionProjections");
-		if (typeof projections?.stateOf !== "function") throw new Error("BRIDGE_CORE_UNAVAILABLE: The official session projection registry is unavailable");
-		const previous = projections.stateOf(agent.session, "bridgeKernel");
-		if (previous === void 0) throw new Error("BRIDGE_CORE_UNAVAILABLE: The official kernel projection is not registered");
+		const previous = identity.requireState(agent.session);
 		assertOwner(previous, agent.session);
 		if (previous.binding !== null) assertSameBinding(parseBinding(previous.binding), candidate);
 		assertDistinctNative(previous.inheritedBinding, candidate);
 		const modules = await loadRuntimeModules(ctx.loader);
-		if (typeof modules.appendPluginRecord !== "function" || typeof modules.pluginRecordOf !== "function") throw new Error("BRIDGE_CORE_UNAVAILABLE: The official ignorable plugin record capability is unavailable");
-		const current = projections.stateOf(agent.session, "bridgeKernel");
-		if (current === void 0) throw new Error("BRIDGE_CORE_UNAVAILABLE: The official kernel projection was unregistered");
+		const current = identity.requireState(agent.session);
 		assertOwner(current, agent.session);
 		if (current.binding !== null) {
 			assertSameBinding(parseBinding(current.binding), candidate);
@@ -629,17 +728,19 @@ const identity = {
 		const nextSeq = agent.session.seq;
 		const committedSeq = modules.appendPluginRecord(agent.session, KERNEL_RECORD_TYPE, candidate);
 		if (!Number.isSafeInteger(committedSeq) || committedSeq !== nextSeq || agent.session.seq !== nextSeq + 1) throw new Error("BRIDGE_BINDING_NOT_COMMITTED: The official plugin record was not appended at the session cursor");
-		const committed = projections.stateOf(agent.session, "bridgeKernel");
-		if (committed === void 0 || committed.binding === null) throw new Error("BRIDGE_BINDING_NOT_COMMITTED: The native identity is absent from the official projection");
+		const committed = identity.requireState(agent.session);
+		if (committed.binding === null) throw new Error("BRIDGE_BINDING_NOT_COMMITTED: The native identity is absent from the official projection");
 		assertOwner(committed, agent.session);
 		assertSameBinding(parseBinding(committed.binding), candidate);
 		return committedSeq;
 	},
+	/** The registered handle's state, or the documented "projection is gone" failure. */
+	requireState(value) {
+		if (handle$1 === void 0) throw new Error("BRIDGE_CORE_UNAVAILABLE: The official kernel projection is not registered");
+		return handle$1.stateOf(value);
+	},
 	resolve(agent) {
-		const projections = getHostContext().get("sessionProjections");
-		if (typeof projections?.stateOf !== "function") throw new Error("BRIDGE_CORE_UNAVAILABLE: The official session projection registry is unavailable");
-		const state = projections.stateOf(agent.session, "bridgeKernel");
-		if (state === void 0) throw new Error("BRIDGE_CORE_UNAVAILABLE: The official kernel projection is not registered");
+		const state = identity.requireState(agent.session);
 		assertOwner(state, agent.session);
 		if (state.binding === null) throw new Error("BRIDGE_BINDING_MISSING: The official session has no native kernel binding");
 		const binding = parseBinding(state.binding);
@@ -647,10 +748,7 @@ const identity = {
 		return binding;
 	},
 	inherited(value) {
-		const projections = getHostContext().get("sessionProjections");
-		if (typeof projections?.stateOf !== "function") throw new Error("BRIDGE_CORE_UNAVAILABLE: The official session projection registry is unavailable");
-		const state = projections.stateOf(value, "bridgeKernel");
-		if (state === void 0) throw new Error("BRIDGE_CORE_UNAVAILABLE: The official kernel projection is not registered");
+		const state = identity.requireState(value);
 		assertOwner(state, value);
 		if (state.inheritedBinding === null) return null;
 		const binding = parseBinding(state.inheritedBinding);
@@ -2530,11 +2628,13 @@ const MAX_TURN_BYTES = 64 * 1024 * 1024;
 const MAX_TURN_TOOLS = 1024;
 const sink = {
 	async create(input) {
-		const modules = await loadRuntimeModules(getHostContext().loader);
+		const ctx = getHostContext();
+		const modules = await loadRuntimeModules(ctx.loader);
 		const { agent, signal } = input;
 		signal.throwIfAborted();
 		runtime.lifetime.signal.throwIfAborted();
 		if (runtime.exchanges.has(agent.id)) throw new Error("BRIDGE_BUSY: 此会话已有原生回合。");
+		await ensureNativeExecutor(ctx, agent, signal);
 		const controller = new AbortController();
 		const state = {
 			input,
@@ -2548,7 +2648,6 @@ const sink = {
 			assistants: /* @__PURE__ */ new Map(),
 			tools: /* @__PURE__ */ new Map(),
 			registrations: /* @__PURE__ */ new Map(),
-			restoreMode: agent.ctx.tools.presentAs("native"),
 			queue: [],
 			queuedBytes: 0,
 			outputBytes: 0,
@@ -2838,9 +2937,8 @@ const sink = {
 				state.disposal = (async () => {
 					const outcomes = await Promise.allSettled([...state.registrations.values()].map((dispose) => Promise.resolve().then(dispose)));
 					state.registrations.clear();
-					const mode = await Promise.allSettled([Promise.resolve().then(state.restoreMode)]);
 					if (runtime.exchanges.get(agent.id) === official) runtime.exchanges.delete(agent.id);
-					const failures = [...outcomes, ...mode].filter((outcome) => outcome.status === "rejected");
+					const failures = outcomes.filter((outcome) => outcome.status === "rejected");
 					if (failures.length > 0) throw new AggregateError(failures.map((failure) => failure.reason), "BRIDGE_TOOLS_DISPOSE_FAILED");
 				})();
 				return state.disposal;
@@ -2949,6 +3047,29 @@ const sink = {
 		}
 	}
 };
+/**
+* Make the bridged agent's own scope select the official native executor. DSH
+* 0.2.2 allows exactly one executor per scope and its disposer clears the
+* selection, so this installs the executor once per agent and lets the agent's
+* scope own the effect. A preset that already selected another presentation is
+* refused loudly instead of silently degrading into `UNKNOWN_TOOL` results.
+*/
+async function ensureNativeExecutor(ctx, agent, signal) {
+	if (runtime.executors.has(agent)) return;
+	let NativeToolExecutor;
+	try {
+		NativeToolExecutor = await loadNativeExecutor(ctx.loader);
+	} catch (cause) {
+		throw new Error("BRIDGE_CORE_UNAVAILABLE: 官方原生工具执行器不可用，无法回放本机内核的工具调用。", { cause });
+	}
+	signal.throwIfAborted();
+	try {
+		agent.ctx.tools.setExecutor(new NativeToolExecutor(agent.ctx));
+	} catch (cause) {
+		throw new Error("BRIDGE_TOOL_PRESENTATION_UNSUPPORTED: 此会话的预设已选定其它工具呈现方式，原生内核不能回放工具调用。", { cause });
+	}
+	runtime.executors.add(agent);
+}
 function createTool(name, arguments_) {
 	let resolve;
 	let reject;
@@ -3061,7 +3182,7 @@ const session = {
 	},
 	async createInherited(source, create) {
 		const ctx = getHostContext();
-		const state = ctx.sessionProjections.stateOf(source, "bridgeKernel");
+		const state = identity.stateOf(source);
 		if (state?.binding === null || state?.binding === void 0) {
 			if (state?.inheritedBinding !== null && state?.inheritedBinding !== void 0 || source.requestHeader()?.config.provider === "dsh-tauri-kernel") throw new Error("BRIDGE_BINDING_MISSING: 源会话尚未完成原生绑定，不能派生工作树会话。");
 			return create();
@@ -3089,7 +3210,7 @@ const session = {
 		});
 	},
 	async prepare(source, agent, signal) {
-		const state = getHostContext().sessionProjections.stateOf(source, "bridgeKernel");
+		const state = identity.stateOf(source);
 		const binding = state?.binding;
 		if (binding === null || binding === void 0) {
 			if (state?.inheritedBinding !== null && state?.inheritedBinding !== void 0 || source.requestHeader()?.config.provider === "dsh-tauri-kernel") throw new Error("BRIDGE_BINDING_MISSING: 源会话尚未完成原生绑定，不能派生工作树会话。");
@@ -3102,7 +3223,7 @@ const session = {
 	},
 	async repairInherited(agent, signal) {
 		const ctx = getHostContext();
-		const state = ctx.sessionProjections.stateOf(agent.session, "bridgeKernel");
+		const state = identity.stateOf(agent.session);
 		const scoped = AbortSignal.any([signal, runtime.lifetime.signal]);
 		if (state?.binding !== null && state?.binding !== void 0) return;
 		const inherited = identity.inherited(agent.session);
@@ -3158,8 +3279,7 @@ const session = {
 		for (const composition of ctx.agentPresets.inspectCompositions(agent.ctx)) if (composition.modules.some((module) => module.moduleName === "@deepseek-ai/dsh-hooks-codex" || module.moduleName === "@deepseek-ai/dsh-hooks-claude-code")) throw new Error("BRIDGE_HOOK_COMPOSITION_UNSUPPORTED: 原生会话不能叠加官方 Codex / Claude hooks，避免重复执行本机配置。");
 	},
 	async execute(input) {
-		const ctx = getHostContext();
-		if (input.binding.sessionId !== input.agent.session.id || !sameBinding(ctx.sessionProjections.stateOf(input.agent.session, "bridgeKernel")?.binding, input.binding)) throw new Error("BRIDGE_BINDING_MISMATCH: 不能替换已有会话的原生内核。");
+		if (input.binding.sessionId !== input.agent.session.id || !sameBinding(identity.stateOf(input.agent.session)?.binding, input.binding)) throw new Error("BRIDGE_BINDING_MISMATCH: 不能替换已有会话的原生内核。");
 		input.signal.throwIfAborted();
 		const current = runtime.exchanges.get(input.agent.id);
 		if (current) {
@@ -3273,7 +3393,7 @@ async function bindFork(agent, source, signal, parent) {
 			scoped.throwIfAborted();
 			agent.ctx.fiber.assertActive();
 			assertForkSource(parent, agent, source);
-			if (runtime.lifetime !== lifetime || !runtime.ready || !sameBinding(identity.resolve(agent), entry.binding) || ctx.sessionProjections.stateOf(agent.session, "bridgeKernel")?.inheritedBinding?.sessionId !== agent.session.header.parentSession) throw new Error("BRIDGE_BINDING_NOT_COMMITTED: 工作树原生身份未写入官方投影。");
+			if (runtime.lifetime !== lifetime || !runtime.ready || !sameBinding(identity.resolve(agent), entry.binding) || identity.stateOf(agent.session)?.inheritedBinding?.sessionId !== agent.session.header.parentSession) throw new Error("BRIDGE_BINDING_NOT_COMMITTED: 工作树原生身份未写入官方投影。");
 		} };
 	} catch (error) {
 		await session.remove(agent.id, agent);
@@ -3295,8 +3415,7 @@ async function resolveParent(sessionId, signal) {
 	return result.agent;
 }
 function assertForkSource(parent, child, binding) {
-	const ctx = getHostContext();
-	if (parent.id !== child.session.header.parentSession || parent.seq !== child.session.inheritedEventCount || !sameBinding(ctx.sessionProjections.stateOf(parent, "bridgeKernel")?.binding, binding)) throw new Error("BRIDGE_FORK_SOURCE_CHANGED: 父会话与当前继承前缀不一致，请重新创建工作树会话。");
+	if (parent.id !== child.session.header.parentSession || parent.seq !== child.session.inheritedEventCount || !sameBinding(identity.stateOf(parent)?.binding, binding)) throw new Error("BRIDGE_FORK_SOURCE_CHANGED: 父会话与当前继承前缀不一致，请重新创建工作树会话。");
 }
 async function close(sessionId, owner) {
 	if (owner !== void 0 && !ownsSession(sessionId, owner)) return;
@@ -3425,12 +3544,19 @@ function activeSink(agent, controller) {
 	if (runtime.controllers.get(agent.id) !== controller || exchange?.state.input.agent !== agent || exchange.state.native !== current) throw new Error("BRIDGE_NOTIFICATION_OUTSIDE_TURN: 原生内核在官方回合外或替换后输出。");
 	return exchange.state.native;
 }
+/**
+* DSH 0.2.2 replaced the single `permissions` projection payload (sandbox and
+* approval knobs) with `PermissionSelection` (a preset name only). The two knob
+* owners expose their own session override again, so read them where they live.
+*/
 function permissionOf(value) {
-	const state = getHostContext().sessionProjections.stateOf(value, "permissions");
-	if (!state || state.sandbox === null && state.approval === null) return void 0;
+	const ctx = getHostContext();
+	const sandbox = ctx.get("sandboxPolicy")?.overrideOf(value);
+	const approval = ctx.approval.overrideOf(value);
+	if (sandbox === void 0 && approval === void 0) return void 0;
 	return {
-		sandbox: state.sandbox ?? void 0,
-		approval: state.approval ?? void 0
+		sandbox,
+		approval
 	};
 }
 function sameBinding(left, right) {
@@ -3441,6 +3567,8 @@ function keyOf(binding) {
 }
 //#endregion
 //#region src/host/service/model.ts
+/** Retained handle: the registry-level `stateOf` is deprecated in DSH 0.2.2. */
+let handle;
 const model = {
 	async register() {
 		const ctx = getHostContext();
@@ -3470,7 +3598,7 @@ const model = {
 			defaultModel: identifier.optional(),
 			defaultReasoningEffort: identifier.optional()
 		});
-		const unregister = ctx.sessionProjections.register({
+		const registered = await ctx.sessionProjections.register({
 			key: "bridgeModel",
 			stateSchema: optionsSchema,
 			init: () => ({
@@ -3488,16 +3616,27 @@ const model = {
 			},
 			stateVersion: 1
 		});
+		lifetime.signal.throwIfAborted();
+		if (runtime.lifetime !== lifetime || getHostContext() !== ctx) {
+			await registered.dispose();
+			throw new Error("BRIDGE_DISPOSED: Model projection owner changed during registration");
+		}
+		handle = registered;
 		runtime.optionsSchema = optionsSchema;
 		runtime.catalogSchema = catalogSchema;
-		return () => {
-			unregister();
+		return async () => {
+			if (handle === registered) handle = void 0;
 			if (runtime.optionsSchema === optionsSchema) runtime.optionsSchema = void 0;
 			if (runtime.catalogSchema === catalogSchema) runtime.catalogSchema = void 0;
+			await registered.dispose();
 		};
 	},
+	/** Folded native turn options of one official session. */
+	stateOf(value) {
+		return handle?.stateOf(value);
+	},
 	resolve(agent) {
-		const value = getHostContext().sessionProjections.stateOf(agent.session, "bridgeModel");
+		const value = model.stateOf(agent.session);
 		if (value === void 0) throw new Error("BRIDGE_CORE_UNAVAILABLE: 原生模型投影不可用。");
 		return parseOptions(value);
 	},
@@ -3537,7 +3676,6 @@ const model = {
 			assertLive$1(agent, lifetime);
 			const modules = await waitFor(loadRuntimeModules(getHostContext().loader), lifetime.signal);
 			assertLive$1(agent, lifetime);
-			if (typeof modules.appendPluginRecord !== "function" || typeof modules.pluginRecordOf !== "function") throw new Error("BRIDGE_CORE_UNAVAILABLE: 原生模型选择的官方记录接口不可用。");
 			if (!sameOptions(model.resolve(agent), next)) {
 				const cursor = agent.session.seq;
 				const seq = modules.appendPluginRecord(agent.session, MODEL_RECORD_TYPE, next);
@@ -3788,9 +3926,8 @@ const adapter = {
 			throw error;
 		}
 		if (decision.kind !== "enter" || payload.signal.aborted) return decision;
-		const ctx = getHostContext();
 		await session.repairInherited(payload.agent, payload.signal);
-		const binding = ctx.sessionProjections.stateOf(payload.agent.session, "bridgeKernel")?.binding;
+		const binding = identity.stateOf(payload.agent.session)?.binding;
 		if (binding === null || binding === void 0) {
 			if (payload.agent.session.requestHeader()?.config.provider === "dsh-tauri-kernel") throw new Error("BRIDGE_BINDING_MISSING: 原生内核的官方身份记录缺失。");
 			return decision;
@@ -3808,7 +3945,7 @@ const adapter = {
 	async request(payload, next) {
 		const config = await next();
 		const ctx = getHostContext();
-		const projected = ctx.sessionProjections.stateOf(payload.agent.session, "bridgeKernel")?.binding;
+		const projected = identity.stateOf(payload.agent.session)?.binding;
 		if (projected === null || projected === void 0) {
 			if (config.provider === "dsh-tauri-kernel" || payload.agent.session.requestHeader()?.config.provider === "dsh-tauri-kernel") throw new Error("BRIDGE_BINDING_MISSING: 原生内核的官方身份记录缺失。");
 			return config;
@@ -3841,8 +3978,8 @@ const adapter = {
 		const admitted = runtime.steps.get(options.sessionId);
 		if (!admitted || admitted.dispatched || admitted.request !== void 0 || admitted.signal !== options.signal) throw new Error("BRIDGE_STEP_UNAVAILABLE: 没有对应的官方已接纳回合。");
 		assertLive(admitted.agent, options.signal);
-		const boundary = ctx.sessionProjections.stateOf(admitted.agent.session, "turnBoundary");
-		if (boundary?.lastTurn !== admitted.turn || boundary.openTurnStartSeq === null || boundary.lastStepBoundary?.kind !== "start" || boundary.lastStepBoundary.seq !== boundary.lastStepStartSeq) throw new Error("BRIDGE_STEP_UNAVAILABLE: 官方回合边界不再有效。");
+		const boundary = ctx.agents.turnBoundaryOf(admitted.agent.session);
+		if (boundary.lastTurn !== admitted.turn || boundary.openTurnStartSeq === null || boundary.lastStepBoundary?.kind !== "start" || boundary.lastStepBoundary.seq !== boundary.lastStepStartSeq) throw new Error("BRIDGE_STEP_UNAVAILABLE: 官方回合边界不再有效。");
 		admitted.request = options;
 		try {
 			yield* next();

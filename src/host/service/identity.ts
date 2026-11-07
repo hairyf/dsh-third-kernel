@@ -1,13 +1,22 @@
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Session } from '@deepseek-ai/dsh-session'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type { KernelBinding, KernelProjectionState } from '../../shared/types'
 import { BRIDGE_PROVIDER, KERNEL_RECORD_TYPE } from '../config/constants'
 import { runtime } from '../config/runtime'
 import { getHostContext } from '../context'
 import { loadRuntimeModules, loadRuntimeZod } from '../utils/runtime-modules'
 
+/**
+ * The retained projection handle. DSH 0.2.2 turned `sessionProjections.register`
+ * into an awaitable that yields a `ProjectionHandle`; the deprecated
+ * registry-level `stateOf(session, key)` returns `unknown` and logs a warning,
+ * so every read in this plugin goes through the handle this module owns.
+ */
+let handle: ProjectionHandle<KernelProjectionState> | undefined
+
 export const identity = {
-  async register(): Promise<() => void> {
+  async register(): Promise<() => void | Promise<void>> {
     const ctx = getHostContext()
     const lifetime = runtime.lifetime
     const z = await loadRuntimeZod(ctx.loader)
@@ -30,7 +39,7 @@ export const identity = {
     const projections = ctx.get('sessionProjections')
     if (typeof projections?.register !== 'function')
       throw new Error('BRIDGE_CORE_UNAVAILABLE: The official session projection registry is unavailable')
-    const unregister = projections.register({
+    const registered = await projections.register({
       key: 'bridgeKernel',
       stateSchema,
       init: (header, inheritedEventCount) => Object.freeze({ ownerSessionId: header.id, inheritedEventCount, inheritedBinding: null, binding: null }),
@@ -56,9 +65,15 @@ export const identity = {
       wire: { viewSchema, view: state => state.binding },
       stateVersion: 2,
     })
+    lifetime.signal.throwIfAborted()
+    if (runtime.lifetime !== lifetime || getHostContext() !== ctx) {
+      await registered.dispose()
+      throw new Error('BRIDGE_DISPOSED: Kernel projection owner changed during registration')
+    }
+    handle = registered
     runtime.bindingSchema = bindingSchema
     const dispose = ctx.on('agent/created', ({ agent, source }) => {
-      if (source !== 'resume' || projections.stateOf(agent.session, 'bridgeKernel')?.binding == null)
+      if (source !== 'resume' || identity.stateOf(agent.session)?.binding == null)
         return
       const binding = identity.resolve(agent)
       const fallback = ctx.get('agentDefaultModel')?.currentSelection()
@@ -70,12 +85,19 @@ export const identity = {
       }
       return undefined
     }, { global: true })
-    return () => {
+    return async () => {
       dispose()
-      unregister()
+      if (handle === registered)
+        handle = undefined
       if (runtime.bindingSchema === bindingSchema)
         runtime.bindingSchema = undefined
+      await registered.dispose()
     }
+  },
+
+  /** The committed kernel projection of one official session, or `undefined` before registration. */
+  stateOf(value: Session): KernelProjectionState | undefined {
+    return handle?.stateOf(value)
   },
 
   hydrate(agent: Agent): void {
@@ -89,22 +111,15 @@ export const identity = {
     if (candidate.sessionId !== agent.session.id)
       throw new Error('BRIDGE_INHERITED_SESSION: A native binding must belong to the exact official session')
     const ctx = getHostContext()
-    const projections = ctx.get('sessionProjections')
-    if (typeof projections?.stateOf !== 'function')
-      throw new Error('BRIDGE_CORE_UNAVAILABLE: The official session projection registry is unavailable')
-    const previous = projections.stateOf(agent.session, 'bridgeKernel')
-    if (previous === undefined)
-      throw new Error('BRIDGE_CORE_UNAVAILABLE: The official kernel projection is not registered')
+    const previous = identity.requireState(agent.session)
     assertOwner(previous, agent.session)
     if (previous.binding !== null)
       assertSameBinding(parseBinding(previous.binding), candidate)
     assertDistinctNative(previous.inheritedBinding, candidate)
+    // The plugin-record capability is part of the pinned core line; a core
+    // without it already failed at `loadRuntimeModules`.
     const modules = await loadRuntimeModules(ctx.loader)
-    if (typeof modules.appendPluginRecord !== 'function' || typeof modules.pluginRecordOf !== 'function')
-      throw new Error('BRIDGE_CORE_UNAVAILABLE: The official ignorable plugin record capability is unavailable')
-    const current = projections.stateOf(agent.session, 'bridgeKernel')
-    if (current === undefined)
-      throw new Error('BRIDGE_CORE_UNAVAILABLE: The official kernel projection was unregistered')
+    const current = identity.requireState(agent.session)
     assertOwner(current, agent.session)
     if (current.binding !== null) {
       assertSameBinding(parseBinding(current.binding), candidate)
@@ -115,22 +130,23 @@ export const identity = {
     const committedSeq = modules.appendPluginRecord(agent.session, KERNEL_RECORD_TYPE, candidate)
     if (!Number.isSafeInteger(committedSeq) || committedSeq !== nextSeq || agent.session.seq !== nextSeq + 1)
       throw new Error('BRIDGE_BINDING_NOT_COMMITTED: The official plugin record was not appended at the session cursor')
-    const committed = projections.stateOf(agent.session, 'bridgeKernel')
-    if (committed === undefined || committed.binding === null)
+    const committed = identity.requireState(agent.session)
+    if (committed.binding === null)
       throw new Error('BRIDGE_BINDING_NOT_COMMITTED: The native identity is absent from the official projection')
     assertOwner(committed, agent.session)
     assertSameBinding(parseBinding(committed.binding), candidate)
     return committedSeq
   },
 
-  resolve(agent: Agent): KernelBinding {
-    const ctx = getHostContext()
-    const projections = ctx.get('sessionProjections')
-    if (typeof projections?.stateOf !== 'function')
-      throw new Error('BRIDGE_CORE_UNAVAILABLE: The official session projection registry is unavailable')
-    const state = projections.stateOf(agent.session, 'bridgeKernel')
-    if (state === undefined)
+  /** The registered handle's state, or the documented "projection is gone" failure. */
+  requireState(value: Session): KernelProjectionState {
+    if (handle === undefined)
       throw new Error('BRIDGE_CORE_UNAVAILABLE: The official kernel projection is not registered')
+    return handle.stateOf(value)
+  },
+
+  resolve(agent: Agent): KernelBinding {
+    const state = identity.requireState(agent.session)
     assertOwner(state, agent.session)
     if (state.binding === null)
       throw new Error('BRIDGE_BINDING_MISSING: The official session has no native kernel binding')
@@ -141,13 +157,7 @@ export const identity = {
   },
 
   inherited(value: Session): KernelBinding | null {
-    const ctx = getHostContext()
-    const projections = ctx.get('sessionProjections')
-    if (typeof projections?.stateOf !== 'function')
-      throw new Error('BRIDGE_CORE_UNAVAILABLE: The official session projection registry is unavailable')
-    const state = projections.stateOf(value, 'bridgeKernel')
-    if (state === undefined)
-      throw new Error('BRIDGE_CORE_UNAVAILABLE: The official kernel projection is not registered')
+    const state = identity.requireState(value)
     assertOwner(state, value)
     if (state.inheritedBinding === null)
       return null
