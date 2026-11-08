@@ -24,6 +24,16 @@ export async function loadNativeExecutor(loader: PlatformLoader): Promise<Native
   return resolved as NativeToolExecutorClass
 }
 
+/** Public pipeline used for executor-owned native replay capabilities. */
+export async function loadToolPipeline(loader: PlatformLoader): Promise<typeof import('@deepseek-ai/dsh-tools/pipeline')> {
+  const module = await loader.import('@deepseek-ai/dsh-tools/pipeline')
+  const resolved = (module as typeof import('@deepseek-ai/dsh-tools/pipeline'))?.ToolExecutionPipeline ? module : loader.unwrapExports(module)
+  const pipeline = resolved as typeof import('@deepseek-ai/dsh-tools/pipeline')
+  if (typeof pipeline?.ToolExecutionPipeline !== 'function' || typeof pipeline.executeToolBatch !== 'function')
+    throw new TypeError('BRIDGE_RUNTIME_EXPORT_MISSING: @deepseek-ai/dsh-tools/pipeline')
+  return pipeline
+}
+
 export async function loadRuntimeZod(loader: PlatformLoader): Promise<typeof z> {
   const value = await loader.import('zod')
   const direct = (value as { z?: typeof z } | null)?.z

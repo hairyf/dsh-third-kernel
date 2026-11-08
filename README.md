@@ -73,16 +73,16 @@ pnpm run build
 | 能力 | 旧接入（≤ 0.2.1） | 现接入（0.2.2-rc.1） |
 | --- | --- | --- |
 | 会话投影 | `sessionProjections.register()` 同步返回 disposer，registry 级 `stateOf(session, key)` | 注册 await 得到 `ProjectionHandle`，插件自己保留句柄且只用 `handle.stateOf(session)` |
-| 工具呈现 | `agent.ctx.tools.presentAs('native')` | `agent.ctx.tools.setExecutor(new NativeToolExecutor(agent.ctx))`（每 scope 只能有一个执行器） |
+| 工具呈现 | `agent.ctx.tools.presentAs('native')` | `agent.ctx.tools.setExecutor()` + 官方 `ToolExecutionPipeline` 原生回放查找（每 scope 只能有一个执行器） |
 | 会话权限 | `permissions` 投影带 `sandbox` / `approval` | `ctx.sandboxPolicy.overrideOf()` + `ctx.approval.overrideOf()`（投影现在只保留预设名） |
 | 回合边界 | `turnBoundary` 投影 | `ctx.agents.turnBoundaryOf(session)`（投影降级为宿主内部单元） |
 | 插件记录 | 可选导出，缺失即静默降级 | `appendPluginRecord` / `pluginRecordOf` 为硬依赖，缺失即 `BRIDGE_CORE_UNAVAILABLE` |
 
 ### 验证状态
 
-- `pnpm run typecheck`、`pnpm run build`（含 publint）在本机通过。
-- `vitest` 的协议回归（codex-protocol / claude-backends / persistence / turn-options-contract / api-snapshot / 宿主路由）全部通过。
-- `test/codex-session.test.ts`、`test/codex-text.test.ts`、`test/turn-options.test.ts` 的第 4 跳会真实启动本机 Codex CLI；本机 CLI 已安装但上游账号返回 `403 账户余额不足`，因此这三处失败属于外部账号状态，未改断言掩盖。
+- `pnpm run build`（含 publint）在本机通过；类型检查与全仓 lint 正在运行。
+- 全量 Vitest 共 69 项：66 项通过、3 项失败。新增 8 项原生工具回放回归使用真实官方工具服务与管线，覆盖 Bash/Grep 缺失于步骤快照、原生错误、跨步骤与跨回合清理、调用和结果一致性，以及普通工具的快照准入。
+- 真实 Claude CLI 2.1.296 的单回合接入测试通过。真实 Codex CLI 0.162.0 的单回合、文本去重和回合选项测试失败；回合选项测试捕获到上游 `403 账户余额不足`，另两项未收到预期文本。这是本机已有的账号限制，未修改断言或跳过测试。
 
 ### 子仓库
 
