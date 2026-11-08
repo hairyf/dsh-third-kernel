@@ -24,7 +24,7 @@ describe('native tool replay through the official pipeline', () => {
     ctx = new Context() as HostContext
     // Only unrelated host services are minimal fixtures; registry and execution are real.
     ctx.provide('systemPrompt', { tools: () => () => {} } as unknown as Context['systemPrompt'])
-    new ToolsService(ctx)
+    const tools = new ToolsService(ctx)
     ctx.provide('loader', { import: (id: string) => import(id), unwrapExports: (value: unknown) => value })
     agent = { id: 'native-agent', ctx, session: {} } as Agent
     ctx.provide('agents', { get: () => agent } as unknown as Context['agents'])
@@ -32,7 +32,7 @@ describe('native tool replay through the official pipeline', () => {
     deactivate = activateHost(ctx, {})
     signal = new AbortController().signal
     // The official loop resolves admission before the native assistant registers its tools.
-    toolSet = await ctx.tools.resolve({ agent, modelSelection, signal })
+    toolSet = await tools.resolve({ agent, modelSelection, signal })
     official = await sink.create({ agent, turn: 1, step: 1, messages: [], signal, dispatched: true, binding: { backend: 'claude', nativeSessionId: 'native-session', sessionId: agent.id } })
     disposers = [
       ctx.on('tools/pre-execute', sink.admitTool),

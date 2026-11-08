@@ -80,7 +80,7 @@ pnpm run build
 
 ### 验证状态
 
-- `pnpm run build`（含 publint）在本机通过；类型检查与全仓 lint 正在运行。
+- `pnpm run lint --fix`、`pnpm run typecheck`、`pnpm run build`（含 publint）在本机通过。
 - 全量 Vitest 共 69 项：66 项通过、3 项失败。新增 8 项原生工具回放回归使用真实官方工具服务与管线，覆盖 Bash/Grep 缺失于步骤快照、原生错误、跨步骤与跨回合清理、调用和结果一致性，以及普通工具的快照准入。
 - 真实 Claude CLI 2.1.296 的单回合接入测试通过。真实 Codex CLI 0.162.0 的单回合、文本去重和回合选项测试失败；回合选项测试捕获到上游 `403 账户余额不足`，另两项未收到预期文本。这是本机已有的账号限制，未修改断言或跳过测试。
 
