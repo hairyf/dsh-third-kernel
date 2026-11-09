@@ -6,7 +6,7 @@ import { Buffer } from 'node:buffer'
 import { isDeepStrictEqual } from 'node:util'
 import { runtime } from '../config/runtime'
 import { getHostContext } from '../context'
-import { loadNativeExecutor, loadRuntimeModules } from '../utils/runtime-modules'
+import { loadNativeExecutor, loadRuntimeModules, loadToolPipeline } from '../utils/runtime-modules'
 
 const MAX_QUEUED_CHUNKS = 8_192
 const MAX_QUEUED_BYTES = 8 * 1_024 * 1_024
@@ -397,7 +397,7 @@ export const sink = {
 }
 
 /**
- * Make the bridged agent's own scope select the official native executor. DSH
+ * Select native replay through the official pipeline in the agent's scope. DSH
  * 0.2.2 allows exactly one executor per scope and its disposer clears the
  * selection, so this installs the executor once per agent and lets the agent's
  * scope own the effect. A preset that already selected another presentation is
@@ -407,8 +407,9 @@ async function ensureNativeExecutor(ctx: HostContext, agent: NativeExecution['ag
   if (runtime.executors.has(agent))
     return
   let NativeToolExecutor
+  let pipelineModule
   try {
-    NativeToolExecutor = await loadNativeExecutor(ctx.loader)
+    [NativeToolExecutor, pipelineModule] = await Promise.all([loadNativeExecutor(ctx.loader), loadToolPipeline(ctx.loader)])
   }
   catch (cause) {
     throw new Error('BRIDGE_CORE_UNAVAILABLE: 官方原生工具执行器不可用，无法回放本机内核的工具调用。', { cause })
@@ -418,7 +419,22 @@ async function ensureNativeExecutor(ctx: HostContext, agent: NativeExecution['ag
     // The effect lives on `agent.ctx`, so the selection is released with the
     // agent's own scope — never mid-session, which would strand the next
     // prompt assembly without an executor.
-    agent.ctx.tools.setExecutor(new NativeToolExecutor(agent.ctx))
+    const native = new NativeToolExecutor(agent.ctx)
+    const pipeline = new pipelineModule.ToolExecutionPipeline(agent.ctx, {
+      get(name, scope, toolSet) {
+        const state = runtime.exchanges.get(agent.id)?.state
+        // Native capabilities arrive after the loop snapshots the step's tools.
+        // Only this agent's replay placeholders use the executor-owned lookup;
+        // every other capability retains its original step admission.
+        if (scope === agent && state?.registrations.has(name))
+          return agent.ctx.tools.executable(name, scope)
+        return agent.ctx.tools.executable(name, scope, toolSet)
+      },
+    })
+    agent.ctx.tools.setExecutor({
+      describe: tools => native.describe(tools),
+      execute: input => pipelineModule.executeToolBatch(input, pipeline, () => 10),
+    })
   }
   catch (cause) {
     throw new Error('BRIDGE_TOOL_PRESENTATION_UNSUPPORTED: 此会话的预设已选定其它工具呈现方式，原生内核不能回放工具调用。', { cause })

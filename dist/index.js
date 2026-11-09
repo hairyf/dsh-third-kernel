@@ -361,6 +361,13 @@ async function loadNativeExecutor(loader) {
 	if (typeof resolved !== "function") throw new TypeError("BRIDGE_RUNTIME_EXPORT_MISSING: @deepseek-ai/dsh-tool-executor-native.NativeToolExecutor");
 	return resolved;
 }
+/** Public pipeline used for executor-owned native replay capabilities. */
+async function loadToolPipeline(loader) {
+	const module = await loader.import("@deepseek-ai/dsh-tools/pipeline");
+	const pipeline = module?.ToolExecutionPipeline ? module : loader.unwrapExports(module);
+	if (typeof pipeline?.ToolExecutionPipeline !== "function" || typeof pipeline.executeToolBatch !== "function") throw new TypeError("BRIDGE_RUNTIME_EXPORT_MISSING: @deepseek-ai/dsh-tools/pipeline");
+	return pipeline;
+}
 async function loadRuntimeZod(loader) {
 	const value = await loader.import("zod");
 	const resolved = value?.z ?? loader.unwrapExports(value)?.z;
@@ -3048,7 +3055,7 @@ const sink = {
 	}
 };
 /**
-* Make the bridged agent's own scope select the official native executor. DSH
+* Select native replay through the official pipeline in the agent's scope. DSH
 * 0.2.2 allows exactly one executor per scope and its disposer clears the
 * selection, so this installs the executor once per agent and lets the agent's
 * scope own the effect. A preset that already selected another presentation is
@@ -3057,14 +3064,24 @@ const sink = {
 async function ensureNativeExecutor(ctx, agent, signal) {
 	if (runtime.executors.has(agent)) return;
 	let NativeToolExecutor;
+	let pipelineModule;
 	try {
-		NativeToolExecutor = await loadNativeExecutor(ctx.loader);
+		[NativeToolExecutor, pipelineModule] = await Promise.all([loadNativeExecutor(ctx.loader), loadToolPipeline(ctx.loader)]);
 	} catch (cause) {
 		throw new Error("BRIDGE_CORE_UNAVAILABLE: 官方原生工具执行器不可用，无法回放本机内核的工具调用。", { cause });
 	}
 	signal.throwIfAborted();
 	try {
-		agent.ctx.tools.setExecutor(new NativeToolExecutor(agent.ctx));
+		const native = new NativeToolExecutor(agent.ctx);
+		const pipeline = new pipelineModule.ToolExecutionPipeline(agent.ctx, { get(name, scope, toolSet) {
+			const state = runtime.exchanges.get(agent.id)?.state;
+			if (scope === agent && state?.registrations.has(name)) return agent.ctx.tools.executable(name, scope);
+			return agent.ctx.tools.executable(name, scope, toolSet);
+		} });
+		agent.ctx.tools.setExecutor({
+			describe: (tools) => native.describe(tools),
+			execute: (input) => pipelineModule.executeToolBatch(input, pipeline, () => 10)
+		});
 	} catch (cause) {
 		throw new Error("BRIDGE_TOOL_PRESENTATION_UNSUPPORTED: 此会话的预设已选定其它工具呈现方式，原生内核不能回放工具调用。", { cause });
 	}
