@@ -169,8 +169,32 @@ async function resolveAgent(sessionId: string, lifetime: AbortController): Promi
   if (!agent)
     throw new Error('BRIDGE_SESSION_UNAVAILABLE: 官方会话未返回有效的代理。')
   assertLive(agent, lifetime)
+  await repairFork(agent, lifetime)
   identity.resolve(agent)
   return agent
+}
+
+/**
+ * A seeded work-tree session inherits a native prefix before it owns a native
+ * identity of its own; the first pre-step normally completes that derivation.
+ * The model catalogue is read before any message exists, so finish the same
+ * derivation here instead of answering a bare `BRIDGE_BINDING_MISSING`.
+ */
+async function repairFork(agent: Agent, lifetime: AbortController): Promise<void> {
+  const state = identity.stateOf(agent.session)
+  if (state?.binding != null || state?.inheritedBinding == null)
+    return
+  try {
+    await waitFor(session.repairInherited(agent, lifetime.signal), lifetime.signal)
+  }
+  catch (error) {
+    lifetime.signal.throwIfAborted()
+    // A concurrent pre-step may have won the derivation; only a session that is
+    // still unbound has to report the failure.
+    if (identity.stateOf(agent.session)?.binding == null)
+      throw error
+  }
+  assertLive(agent, lifetime)
 }
 
 async function getCatalog(agent: Agent, lifetime: AbortController): Promise<NativeModelCatalog> {

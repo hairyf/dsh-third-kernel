@@ -73,6 +73,12 @@ it('keeps buffered bridge routes, validation and awaited owner cleanup on the of
     expect((await send('backends', 'HEAD')).body).toBeNull()
     expect((await send('models?sessionId=s')).status).toBe(200)
     expect(models).toHaveBeenCalledWith('s')
+    // A native failure that already carries a stable code reaches the client
+    // instead of the opaque internal message it hid behind before #7.
+    models.mockRejectedValueOnce(new Error('BRIDGE_BINDING_MISSING: 原生内核身份缺失。'))
+    const coded = await send('models?sessionId=s')
+    expect(coded.status).toBe(400)
+    expect(await coded.text()).toContain('BRIDGE_BINDING_MISSING')
     for (const path of ['models', 'models?sessionId=', 'models?sessionId=%20', 'models?sessionId=s&sessionId=t'])
       expect((await send(path)).status).toBe(400)
     for (const body of ['', '{', 'null', '[]', '{}', '{"sessionId":"s"}', '{"sessionId":"s","model":" ","reasoningEffort":null}'])
@@ -80,6 +86,10 @@ it('keeps buffered bridge routes, validation and awaited owner cleanup on the of
     expect(select).not.toHaveBeenCalled()
     expect((await send('models', 'POST', '{"sessionId":"s","model":null,"reasoningEffort":null}')).status).toBe(200)
     expect(select).toHaveBeenCalledWith('s', { model: null, reasoningEffort: null })
+    select.mockRejectedValueOnce(new Error('BRIDGE_MODEL_UNAVAILABLE: 请选择当前原生内核支持的模型。'))
+    const unselectable = await send('models', 'POST', '{"sessionId":"s","model":"other","reasoningEffort":null}')
+    expect(unselectable.status).toBe(400)
+    expect(await unselectable.text()).toContain('BRIDGE_MODEL_UNAVAILABLE')
     for (const body of ['null', '[]', '{}', '{"backend":"dsh"}', '{"backend":"codex","cwd":" "}', '{"backend":"claude","workspaceId":"w","cwd":"/tmp"}'])
       expect((await send('sessions', 'POST', body)).status).toBe(400)
     expect(create).not.toHaveBeenCalled()

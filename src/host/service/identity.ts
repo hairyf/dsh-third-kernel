@@ -75,14 +75,7 @@ export const identity = {
     const dispose = ctx.on('agent/created', ({ agent, source }) => {
       if (source !== 'resume' || identity.stateOf(agent.session)?.binding == null)
         return
-      const binding = identity.resolve(agent)
-      const fallback = ctx.get('agentDefaultModel')?.currentSelection()
-      if ((agent.options.provider === undefined && agent.options.model === undefined) || (agent.options.provider === fallback?.provider && agent.options.model === fallback?.model)) {
-        identity.hydrate(agent)
-      }
-      else if (agent.options.provider === BRIDGE_PROVIDER && agent.options.model === binding.backend) {
-        identity.hydrate(agent)
-      }
+      identity.hydrate(agent)
       return undefined
     }, { global: true })
     return async () => {
@@ -100,10 +93,28 @@ export const identity = {
     return handle?.stateOf(value)
   },
 
+  /**
+   * Restore the native route of one Agent whose Session already carries a
+   * committed binding.
+   *
+   * DSH 0.2.2 session-controlled Agents publish `agent.options` through
+   * getter-only accessors (`ApiSessionAgentController.agentOptions()`), so
+   * assigning `provider`/`model` throws a TypeError in strict mode and takes
+   * `agent/created` — therefore ordinary session creation — down with it. The
+   * durable selection API is the only supported way to set the route, and it
+   * never replaces a different explicit choice recorded by the user.
+   */
   hydrate(agent: Agent): void {
     const binding = identity.resolve(agent)
-    agent.options.provider = BRIDGE_PROVIDER
-    agent.options.model = binding.backend
+    const route = { provider: BRIDGE_PROVIDER, model: binding.backend }
+    const selected = agent.model.current()
+    if (selected?.provider === route.provider && selected.model === route.model)
+      return
+    // `current()` answers with the live option fallback while nothing is
+    // recorded, so a differing recorded selection is an explicit choice.
+    if (selected !== undefined && (selected.provider !== agent.options.provider || selected.model !== agent.options.model))
+      return
+    agent.model.select(route)
   },
 
   async append(agent: Agent, binding: KernelBinding): Promise<number> {

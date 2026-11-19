@@ -80,9 +80,10 @@ pnpm run build
 
 ### 验证状态
 
-- `pnpm run lint --fix`、`pnpm run typecheck`、`pnpm run build`（含 publint）在本机通过。
-- 全量 Vitest 共 69 项：66 项通过、3 项失败。新增 8 项原生工具回放回归使用真实官方工具服务与管线，覆盖 Bash/Grep 缺失于步骤快照、原生错误、跨步骤与跨回合清理、调用和结果一致性，以及普通工具的快照准入。
-- 真实 Claude CLI 2.1.296 的单回合接入测试通过。真实 Codex CLI 0.162.0 的单回合、文本去重和回合选项测试失败；回合选项测试捕获到上游 `403 账户余额不足`，另两项未收到预期文本。这是本机已有的账号限制，未修改断言或跳过测试。
+- `pnpm run lint`、`pnpm run typecheck`、`pnpm run build`（含 publint）在本机通过。
+- 全量 Vitest 共 76 项，本机全部通过；但真实 CLI 的端到端用例在本机**跳过**（未安装 `codex` / `claude`，`test/turn-options.test.ts` 与 `test/codex-session.test.ts` 会打印 skip 原因），所以“两个内核在真机上跑通”这一项本机无法复验。
+- 协议与修复回归用 stub 子进程覆盖：`test/claude-backends.test.ts`（子通道/任务收尾）、`test/claude-resume-identity.test.ts`（真实 2.1.x 的 resume 握手：initialize 不带 `session_id`、SessionStart hook 不回调）、`test/codex-protocol.test.ts`、`test/native-hydrate.test.ts`（getter-only options 的恢复路由，issues #7/#8）、`test/native-tool-replay.test.ts`（真实官方工具服务与管线）。
+- 恢复路径的两条不可在本机验证的假设，以 issue 复现报告为准：Claude Code 2.1.x 的 `initialize` 不返回 `session_id` 且不回调 `SessionStart` hook；session controller 的 `agentOptions()` 只提供 getter。
 
 ### 子仓库
 

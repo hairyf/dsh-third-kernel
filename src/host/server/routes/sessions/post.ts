@@ -1,5 +1,5 @@
 import { session } from '../../../service/session'
-import { readBody, RequestError } from '../../request'
+import { asRequestError, readBody, RequestError } from '../../request'
 
 export default async function postSessions(request: Request): Promise<{ sessionId: string }> {
   const body = await readBody(request)
@@ -15,9 +15,6 @@ export default async function postSessions(request: Request): Promise<{ sessionI
     return await session.create(body.backend, body.workspaceId as string | undefined, body.cwd as string | undefined, body.agentPreset as string | undefined)
   }
   catch (error) {
-    const message = error instanceof Error ? error.message : ''
-    if (!message.startsWith('BRIDGE_'))
-      throw error
-    throw new RequestError(message)
+    asRequestError(error)
   }
 }

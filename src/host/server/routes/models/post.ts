@@ -1,6 +1,6 @@
 import type { NativeTurnOptions } from '../../../../shared/native-model'
 import { model } from '../../../service/model'
-import { readBody, RequestError } from '../../request'
+import { asRequestError, readBody, RequestError } from '../../request'
 
 export default async function postModels(request: Request): Promise<NativeTurnOptions> {
   const body = await readBody(request)
@@ -10,5 +10,10 @@ export default async function postModels(request: Request): Promise<NativeTurnOp
     if (body[key] !== null && (typeof body[key] !== 'string' || !body[key].trim()))
       throw new RequestError(`BRIDGE_MODEL_INVALID: ${key}`)
   }
-  return model.select(body.sessionId, { model: body.model as string | null, reasoningEffort: body.reasoningEffort as string | null })
+  try {
+    return await model.select(body.sessionId, { model: body.model as string | null, reasoningEffort: body.reasoningEffort as string | null })
+  }
+  catch (error) {
+    asRequestError(error)
+  }
 }

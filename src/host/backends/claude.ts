@@ -175,6 +175,14 @@ class ClaudeSession implements NativeSession {
       const initialization = { subtype: 'initialize', hooks: { SessionStart: [{ hookCallbackIds: [SESSION_START_HOOK_ID] }] } }
       const response = record(await this.control(initialization, signal))
       this.checkIdentity(response)
+      // Claude Code 2.1.x answers `initialize` without a session id and never
+      // invokes the SessionStart hook callback before user input, so a session
+      // whose id the caller chose (resume / `--session-id`) is confirmed by the
+      // accepted handshake itself. Forks keep waiting: their new identity only
+      // exists once the CLI reports it. Every later `session_id` frame is still
+      // checked strictly by `checkIdentity(message, true)`.
+      if (!this.identityConfirmed && this.id !== '')
+        this.confirmIdentity()
       this.noteCapabilities(response)
       if (response.models !== undefined)
         this.catalog = this.modelCatalog(response.models, this.startupModel)
@@ -405,6 +413,11 @@ class ClaudeSession implements NativeSession {
     return this.requests.request(id, { type: 'control_request', request_id: id, request }, signal, timeoutMs)
   }
 
+  private confirmIdentity(): void {
+    this.identityConfirmed = true
+    this.identity.resolve()
+  }
+
   private checkIdentity(message: Record<string, unknown>, required = false): void {
     if (required || typeof message.session_id === 'string') {
       const id = stringField(message, 'session_id')
@@ -416,8 +429,7 @@ class ClaudeSession implements NativeSession {
       else if (id !== this.id) {
         throw new NativeBridgeError('BRIDGE_RESUME_MISMATCH', 'Claude reported a different native session; refusing to replace the stored binding')
       }
-      this.identityConfirmed = true
-      this.identity.resolve()
+      this.confirmIdentity()
     }
   }
 

@@ -96,6 +96,17 @@ function getHostConfig() {
 //#endregion
 //#region src/host/server/request.ts
 var RequestError = class extends Error {};
+/**
+* Re-raise a bridge failure that already carries a stable `BRIDGE_*` code as a
+* client error, so the handler's response body keeps the real reason instead of
+* the generic internal message. Anything else keeps its original identity and
+* stays an internal failure.
+*/
+function asRequestError(error) {
+	const message = error instanceof Error ? error.message : "";
+	if (!message.startsWith("BRIDGE_")) throw error;
+	throw new RequestError(message);
+}
 async function readBody(request) {
 	let body;
 	try {
@@ -695,10 +706,7 @@ const identity = {
 		runtime.bindingSchema = bindingSchema;
 		const dispose = ctx.on("agent/created", ({ agent, source }) => {
 			if (source !== "resume" || identity.stateOf(agent.session)?.binding == null) return;
-			const binding = identity.resolve(agent);
-			const fallback = ctx.get("agentDefaultModel")?.currentSelection();
-			if (agent.options.provider === void 0 && agent.options.model === void 0 || agent.options.provider === fallback?.provider && agent.options.model === fallback?.model) identity.hydrate(agent);
-			else if (agent.options.provider === "dsh-tauri-kernel" && agent.options.model === binding.backend) identity.hydrate(agent);
+			identity.hydrate(agent);
 		}, { global: true });
 		return async () => {
 			dispose();
@@ -711,10 +719,26 @@ const identity = {
 	stateOf(value) {
 		return handle$1?.stateOf(value);
 	},
+	/**
+	* Restore the native route of one Agent whose Session already carries a
+	* committed binding.
+	*
+	* DSH 0.2.2 session-controlled Agents publish `agent.options` through
+	* getter-only accessors (`ApiSessionAgentController.agentOptions()`), so
+	* assigning `provider`/`model` throws a TypeError in strict mode and takes
+	* `agent/created` — therefore ordinary session creation — down with it. The
+	* durable selection API is the only supported way to set the route, and it
+	* never replaces a different explicit choice recorded by the user.
+	*/
 	hydrate(agent) {
-		const binding = identity.resolve(agent);
-		agent.options.provider = BRIDGE_PROVIDER;
-		agent.options.model = binding.backend;
+		const route = {
+			provider: BRIDGE_PROVIDER,
+			model: identity.resolve(agent).backend
+		};
+		const selected = agent.model.current();
+		if (selected?.provider === route.provider && selected.model === route.model) return;
+		if (selected !== void 0 && (selected.provider !== agent.options.provider || selected.model !== agent.options.model)) return;
+		agent.model.select(route);
 	},
 	async append(agent, binding) {
 		const candidate = parseBinding(binding);
@@ -1196,6 +1220,7 @@ var ClaudeSession = class {
 			};
 			const response = record(await this.control(initialization, signal));
 			this.checkIdentity(response);
+			if (!this.identityConfirmed && this.id !== "") this.confirmIdentity();
 			this.noteCapabilities(response);
 			if (response.models !== void 0) this.catalog = this.modelCatalog(response.models, this.startupModel);
 			if (this.failure) throw this.failure;
@@ -1410,6 +1435,10 @@ var ClaudeSession = class {
 			request
 		}, signal, timeoutMs);
 	}
+	confirmIdentity() {
+		this.identityConfirmed = true;
+		this.identity.resolve();
+	}
 	checkIdentity(message, required = false) {
 		if (required || typeof message.session_id === "string") {
 			const id = stringField(message, "session_id");
@@ -1417,8 +1446,7 @@ var ClaudeSession = class {
 				if (id === this.options.forkFrom) throw new NativeBridgeError("BRIDGE_FORK_MISMATCH", "Claude fork did not acknowledge a new native session");
 				this.nativeId = id;
 			} else if (id !== this.id) throw new NativeBridgeError("BRIDGE_RESUME_MISMATCH", "Claude reported a different native session; refusing to replace the stored binding");
-			this.identityConfirmed = true;
-			this.identity.resolve();
+			this.confirmIdentity();
 		}
 	}
 	noteCapabilities(message) {
@@ -3402,7 +3430,7 @@ async function bindFork(agent, source, signal, parent) {
 		agent.ctx.fiber.assertActive();
 		if (entry.binding.nativeSessionId === source.nativeSessionId) throw new Error("BRIDGE_FORK_MISMATCH: 工作树必须获得独立的原生会话身份。");
 		const seq = await identity.append(agent, entry.binding);
-		if (agent.options.provider === void 0 && agent.options.model === void 0) identity.hydrate(agent);
+		identity.hydrate(agent);
 		if (ctx.agents.get(agent.id) === agent && ctx.sessions.get(agent.id) === agent.session) checkpoint.mark(agent, KERNEL_RECORD_TYPE, seq, entry.binding);
 		scoped.throwIfAborted();
 		agent.ctx.fiber.assertActive();
@@ -3730,8 +3758,26 @@ async function resolveAgent(sessionId, lifetime) {
 	}
 	if (!agent) throw new Error("BRIDGE_SESSION_UNAVAILABLE: 官方会话未返回有效的代理。");
 	assertLive$1(agent, lifetime);
+	await repairFork(agent, lifetime);
 	identity.resolve(agent);
 	return agent;
+}
+/**
+* A seeded work-tree session inherits a native prefix before it owns a native
+* identity of its own; the first pre-step normally completes that derivation.
+* The model catalogue is read before any message exists, so finish the same
+* derivation here instead of answering a bare `BRIDGE_BINDING_MISSING`.
+*/
+async function repairFork(agent, lifetime) {
+	const state = identity.stateOf(agent.session);
+	if (state?.binding != null || state?.inheritedBinding == null) return;
+	try {
+		await waitFor(session.repairInherited(agent, lifetime.signal), lifetime.signal);
+	} catch (error) {
+		lifetime.signal.throwIfAborted();
+		if (identity.stateOf(agent.session)?.binding == null) throw error;
+	}
+	assertLive$1(agent, lifetime);
 }
 async function getCatalog(agent, lifetime) {
 	assertLive$1(agent, lifetime);
@@ -3771,10 +3817,14 @@ function assertLive$1(agent, lifetime) {
 }
 //#endregion
 //#region src/host/server/routes/models/get.ts
-function getModels(request) {
+async function getModels(request) {
 	const ids = new URL(request.url).searchParams.getAll("sessionId");
 	if (ids.length !== 1 || !ids[0].trim()) throw new RequestError("BRIDGE_SESSION_INVALID: 请指定原生会话。");
-	return model.getCatalog(ids[0]);
+	try {
+		return await model.getCatalog(ids[0]);
+	} catch (error) {
+		asRequestError(error);
+	}
 }
 //#endregion
 //#region src/host/server/routes/models/post.ts
@@ -3782,10 +3832,14 @@ async function postModels(request) {
 	const body = await readBody(request);
 	if (typeof body.sessionId !== "string" || !body.sessionId.trim()) throw new RequestError("BRIDGE_SESSION_INVALID: 请指定原生会话。");
 	for (const key of ["model", "reasoningEffort"]) if (body[key] !== null && (typeof body[key] !== "string" || !body[key].trim())) throw new RequestError(`BRIDGE_MODEL_INVALID: ${key}`);
-	return model.select(body.sessionId, {
-		model: body.model,
-		reasoningEffort: body.reasoningEffort
-	});
+	try {
+		return await model.select(body.sessionId, {
+			model: body.model,
+			reasoningEffort: body.reasoningEffort
+		});
+	} catch (error) {
+		asRequestError(error);
+	}
 }
 //#endregion
 //#region src/host/server/routes/sessions/post.ts
@@ -3801,9 +3855,7 @@ async function postSessions(request) {
 	try {
 		return await session.create(body.backend, body.workspaceId, body.cwd, body.agentPreset);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : "";
-		if (!message.startsWith("BRIDGE_")) throw error;
-		throw new RequestError(message);
+		asRequestError(error);
 	}
 }
 //#endregion
